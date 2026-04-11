@@ -160,11 +160,11 @@ done
 ## Python API
 
 ```python
-from pyclarcs._io import load_surface, save_surface, save_plane_vtk
-from pyclarcs._symmetry import SymmetryPlane
-from pyclarcs._principal_axes import best_principal_axis_plane
-from pyclarcs._coarse import coarse_symmetry
-from pyclarcs._fine import em_icp_sym, em_icp_sym_corres
+from pyclarcs.io import load_surface, save_surface, save_plane_vtk
+from pyclarcs.symmetry import SymmetryPlane
+from pyclarcs.principal_axes import best_principal_axis_plane
+from pyclarcs.coarse import coarse_symmetry
+from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
 
 # Load surface (any supported format)
 points, polygons = load_surface("surface.vtk")   # or .ply, .stl, .obj, .vtp …
@@ -230,13 +230,13 @@ pyclarcs/
 │   └── pyclarcs/
 │       ├── __init__.py
 │       ├── __main__.py         ← python -m pyclarcs
-│       ├── _cli.py             ← clarcs command + sub-commands
-│       ├── _symmetry.py        ← SymmetryPlane class
-│       ├── _principal_axes.py  ← inertia tensor, PA initialisation
-│       ├── _io.py              ← multi-format surface I/O via VTK 9+
-│       ├── _coarse.py          ← ICP + trimmed estimator, multi-resolution
-│       ├── _fine.py            ← EM-ICP (annealing + doubly-stochastic)
-│       └── _numba_kernels.py   ← JIT-compiled kernels (Numba)
+│       ├── _cli.py             ← clarcs command + sub-commands (internal)
+│       ├── symmetry.py         ← SymmetryPlane class
+│       ├── principal_axes.py   ← inertia tensor, PA initialisation
+│       ├── io.py               ← multi-format surface I/O via VTK 9+
+│       ├── coarse.py           ← ICP + trimmed estimator, multi-resolution
+│       ├── fine.py             ← EM-ICP (annealing + doubly-stochastic)
+│       └── _numba_kernels.py   ← JIT-compiled kernels (Numba, internal)
 └── tests/
     └── test_symmetry.py
 ```

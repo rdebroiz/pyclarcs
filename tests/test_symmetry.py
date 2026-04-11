@@ -8,7 +8,7 @@ test_pipeline_*   : full coarse + fine optimisation pipeline
 
 import numpy as np
 import pytest
-from pyclarcs._symmetry import SymmetryPlane
+from pyclarcs.symmetry import SymmetryPlane
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ def _make_bilateral_ellipsoid(seed: int = 42) -> np.ndarray:
 def test_principal_axis_init():
     """The best principal-axis candidate must be close to the true plane x=5."""
     pts = _make_bilateral_ellipsoid()
-    plane = __import__("pyclarcs._principal_axes", fromlist=["best_principal_axis_plane"]).best_principal_axis_plane(pts)
+    plane = __import__("pyclarcs.principal_axes", fromlist=["best_principal_axis_plane"]).best_principal_axis_plane(pts)
 
     angle_err = np.degrees(np.arccos(np.clip(abs(np.dot(plane.n, [1, 0, 0])), 0, 1)))
     assert angle_err < 5.0, f"Init angle error too large: {angle_err:.2f}°"
@@ -150,9 +150,9 @@ def test_pipeline_bilateral_ellipsoid():
 
     Tolerance: angle < 1°, |Δd| < 0.5 mm.
     """
-    from pyclarcs._principal_axes import best_principal_axis_plane
-    from pyclarcs._coarse import coarse_symmetry
-    from pyclarcs._fine import em_icp_sym, em_icp_sym_corres
+    from pyclarcs.principal_axes import best_principal_axis_plane
+    from pyclarcs.coarse import coarse_symmetry
+    from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
 
     pts = _make_bilateral_ellipsoid(seed=0)
 

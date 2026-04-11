@@ -32,7 +32,7 @@ import numpy as np
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 
-from pyclarcs._symmetry import SymmetryPlane
+from pyclarcs.symmetry import SymmetryPlane
 
 
 # ---------------------------------------------------------------------------

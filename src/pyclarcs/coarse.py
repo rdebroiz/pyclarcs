@@ -11,7 +11,7 @@ optimiser.
 ALGORITHM
 ==========
 The coarse optimiser is a special case of the general EM-ICP framework
-(see ``_fine.py``) in the limit σ → 0:
+(see ``fine.py``) in the limit σ → 0:
 
   When σ → 0, the soft correspondences  A_{i,j} ∝ exp(−||x_i−T(x_j)||²/2σ²)
   collapse to hard, nearest-neighbour correspondences.  This is exactly the
@@ -68,7 +68,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import KDTree
 
-from pyclarcs._symmetry import SymmetryPlane
+from pyclarcs.symmetry import SymmetryPlane
 
 
 # ---------------------------------------------------------------------------

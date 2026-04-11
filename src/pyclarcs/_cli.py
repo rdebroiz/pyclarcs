@@ -110,11 +110,11 @@ def _run_sym_plane(args: argparse.Namespace) -> int:
     # ------------------------------------------------------------------
     # Lazy imports so that the CLI stays fast when invoked with --help
     # ------------------------------------------------------------------
-    from pyclarcs._io import load_surface, save_surface, save_plane_vtk
-    from pyclarcs._principal_axes import best_principal_axis_plane
-    from pyclarcs._coarse import coarse_symmetry
-    from pyclarcs._fine import em_icp_sym, em_icp_sym_corres
-    from pyclarcs._symmetry import SymmetryPlane
+    from pyclarcs.io import load_surface, save_surface, save_plane_vtk
+    from pyclarcs.principal_axes import best_principal_axis_plane
+    from pyclarcs.coarse import coarse_symmetry
+    from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
+    from pyclarcs.symmetry import SymmetryPlane
 
     # ------------------------------------------------------------------
     # Load surface

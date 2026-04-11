@@ -53,7 +53,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import KDTree
 
-from pyclarcs._symmetry import SymmetryPlane
+from pyclarcs.symmetry import SymmetryPlane
 
 
 # ---------------------------------------------------------------------------
