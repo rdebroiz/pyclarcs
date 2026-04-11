@@ -33,6 +33,11 @@ dependencies = [
 clarcs = "pyclarcs._cli:main"
 pyclarcs = "pyclarcs._cli:main"
 
+[project.urls]
+Homepage = "https://github.com/rdebroiz/pyclarcs"
+Repository = "https://github.com/rdebroiz/pyclarcs"
+"Bug Tracker" = "https://github.com/rdebroiz/pyclarcs/issues"
+
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov"]
 
