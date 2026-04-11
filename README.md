@@ -1,24 +1,23 @@
-# clarcs / pyclarcs
+# clarcs
 
-Python port of the **ZZ_SYMC** tool from the
-[CLARCS](https://www.irisa.fr/visages) C++ library.
+Python toolkit for the automated analysis of 3-D surfaces, with a focus on
+endocranial and bilateral anatomical structures.
 
-Automatically finds the **best bilateral symmetry plane** of a 3-D surface.
-Designed for endocranial surfaces but applicable to any approximately bilateral
-3-D object.
+`clarcs` is an extensible command-line tool.  The first available sub-command
+is **`sym-plane`** — more tools will be added in future releases.
 
 ---
 
 ## Scientific background
 
-The method is described in:
+The symmetry plane algorithm is described in:
 
 > Combès B., Hennessy R., Waddington J., Roberts N., Prima S.  
 > **Automatic symmetry plane estimation of bilateral objects in point clouds.**  
 > *IEEE Conference on Computer Vision and Pattern Recognition (CVPR 2008).*
 > Anchorage, United States.
 
-and is one of the three core algorithms of the CLARCS library, presented in:
+and is used in the CLARCS research framework, presented in:
 
 > Abadie A., Combès B., Haegelen C., Prima S.  
 > **CLARCS, a C++ Library for Automated Registration and Comparison of Surfaces:
@@ -40,14 +39,14 @@ solved with an EM algorithm:
 with `X¹ = X² = X` (same surface), `T` a reflection, and `A` a fuzzy
 correspondence matrix.
 
-The implementation runs three successive stages:
+The implementation runs four successive stages:
 
-| Stage | Module | C++ equivalent |
-|---|---|---|
-| **Initialisation** — principal axes of inertia tensor | `_principal_axes.py` | `principal_axes::optimize()` |
-| **Coarse** — ICP with trimmed estimator, multi-resolution | `_coarse.py` | `PointCloudSymmetryPlane::optimize()` |
-| **Fine** — EM-ICP with simulated annealing (σ: 5 → 0.5) | `_fine.py::em_icp_sym` | `EM_ICPSym::optimize()` |
-| **Refinement** — doubly-stochastic EM-ICP at σ = 0.25 | `_fine.py::em_icp_sym_corres` | `EM_ICPSymCorresSym::optimize()` |
+| Stage | Module |
+|---|---|
+| **Initialisation** — principal axes of inertia tensor | `_principal_axes.py` |
+| **Coarse** — ICP with trimmed estimator, multi-resolution | `_coarse.py` |
+| **Fine** — EM-ICP with simulated annealing (σ: 5 → 0.5) | `_fine.py` |
+| **Refinement** — doubly-stochastic EM-ICP at σ = 0.25 | `_fine.py` |
 
 ---
 
@@ -69,9 +68,10 @@ pip install -e ".[dev]"
 
 | Package | Role |
 |---|---|
-| `numpy ≥ 1.21` | Linear algebra (replaces newmat, GSL) |
-| `scipy ≥ 1.7` | KD-tree neighbour search (replaces kdtree / octree) |
-| `vtk ≥ 9.0` | Surface I/O (VTK, PLY, STL, OBJ, VTP, VTU) |
+| `numpy ≥ 1.21` | Linear algebra |
+| `scipy ≥ 1.7` | KD-tree neighbour search |
+| `vtk ≥ 9.0` | Surface I/O |
+| `numba ≥ 0.57` | JIT-compiled kernels (4× speedup on EM stage) |
 
 ---
 
@@ -91,12 +91,11 @@ file extension):
 
 ---
 
-## Usage
+## Commands
 
-### Command line
+### `clarcs sym-plane` — symmetry plane estimation
 
-`clarcs` is the top-level command.  `sym-plane` is the sub-command for
-symmetry plane estimation.
+Find the best bilateral symmetry plane of a 3-D surface.
 
 ```bash
 clarcs sym-plane INPUT [OUTPUT] [--save-plane] [options]
@@ -107,7 +106,7 @@ clarcs sym-plane INPUT [OUTPUT] [--save-plane] [options]
 | Argument | Description |
 |---|---|
 | `INPUT` | Input surface file (any supported format) |
-| `OUTPUT` | Output `.vtk` (or other format) for the symmetry plane patch. Defaults to `<INPUT_STEM>-sym-plane<EXT>` |
+| `OUTPUT` | Output file for the symmetry plane patch. Defaults to `<INPUT_STEM>-sym-plane<EXT>` |
 
 **Options:**
 
@@ -149,49 +148,42 @@ for f in input/*.vtk; do
 done
 ```
 
-### Output files
+**Output files:**
 
 | File | Content |
 |---|---|
-| `<OUTPUT>` | Rectangular patch visualising the symmetry plane (VTK or other format) |
-| `<OUTPUT_STEM>.pl` | Plane parameters — normal `n` and point `p` on the plane (with `--save-plane`) |
+| `<OUTPUT>` | Rectangular patch visualising the symmetry plane |
+| `<OUTPUT_STEM>.pl` | Plane parameters — normal `n` and point `p` (with `--save-plane`) |
 
-### Python API
+---
+
+## Python API
 
 ```python
-import numpy as np
 from pyclarcs._io import load_surface, save_surface, save_plane_vtk
 from pyclarcs._symmetry import SymmetryPlane
 from pyclarcs._principal_axes import best_principal_axis_plane
 from pyclarcs._coarse import coarse_symmetry
 from pyclarcs._fine import em_icp_sym, em_icp_sym_corres
 
-# --- Load surface (any supported format) ---
+# Load surface (any supported format)
 points, polygons = load_surface("surface.vtk")   # or .ply, .stl, .obj, .vtp …
 
-# --- Stage 1: principal-axis initialisation ---
+# Run the pipeline
 plane = best_principal_axis_plane(points)
-
-# --- Stage 2: coarse ICP ---
 plane = coarse_symmetry(points, plane, verbose=True)
-
-# --- Stage 3: fine EM-ICP with annealing ---
-plane = em_icp_sym(points, plane, sigma_init=5.0, sigma_final=0.5, verbose=True)
-
-# --- Stage 4: doubly-stochastic refinement ---
-plane = em_icp_sym_corres(points, plane, sigma=0.25, verbose=True)
+plane = em_icp_sym(points, plane, verbose=True)
+plane = em_icp_sym_corres(points, plane, verbose=True)
 
 print(plane)
 # SymmetryPlane(n=[0.9998, 0.0123, -0.0045], d=83.2156)
 
-# --- Save outputs ---
-plane.save("plane.pl")                           # text parameters
+# Save outputs
+plane.save("plane.pl")
 bounds = (points[:, 0].min(), points[:, 0].max(),
           points[:, 1].min(), points[:, 1].max(),
           points[:, 2].min(), points[:, 2].max())
-save_plane_vtk("plane.vtk", plane, bounds)       # plane patch (any format)
-reflected = plane.apply(points)
-save_surface("symmetric.ply", reflected, polygons)  # reflected surface
+save_plane_vtk("plane.vtk", plane, bounds)
 ```
 
 ### Plane file format (`.pl`)
@@ -202,24 +194,20 @@ p  83.2000  1.0200  -0.3700
 ```
 
 - `n` — unit normal vector of the plane
-- `p` — a point lying on the plane (= `n × d`)
-
-The offset `d` is recovered as `d = n · p`.  This format is compatible with
-the C++ ZZ_SYMC tool.
+- `p` — a point lying on the plane (`p = n × d`)
+- offset `d` is recovered as `d = n · p`
 
 ---
 
 ## Typical surfaces
 
-Based on the experiments described in the CLARCS paper:
-
 | Surface | # points | # faces | Expected runtime* |
 |---|---|---|---|
-| Endocranium (CT) | ~10 000 | ~20 000 | < 1 min |
+| Endocranium (CT) | ~10 000 | ~20 000 | ~35 s |
 | Skull outer surface (CT) | ~80 000–137 000 | ~160 000–280 000 | 2–5 min |
-| Subcortical nucleus (MRI) | ~5 000 | ~10 000 | < 30 s |
+| Subcortical nucleus (MRI) | ~5 000 | ~10 000 | < 15 s |
 
-\* indicative, on a modern CPU.
+\* on a modern multi-core CPU with Numba JIT cache warm.
 
 ---
 
@@ -242,31 +230,16 @@ pyclarcs/
 │   └── pyclarcs/
 │       ├── __init__.py
 │       ├── __main__.py         ← python -m pyclarcs
-│       ├── _cli.py             ← clarcs command + sym-plane sub-command
-│       ├── _symmetry.py        ← SymmetryPlane class (reflection, fit, I/O)
+│       ├── _cli.py             ← clarcs command + sub-commands
+│       ├── _symmetry.py        ← SymmetryPlane class
 │       ├── _principal_axes.py  ← inertia tensor, PA initialisation
 │       ├── _io.py              ← multi-format surface I/O via VTK 9+
 │       ├── _coarse.py          ← ICP + trimmed estimator, multi-resolution
-│       └── _fine.py            ← EM-ICP (annealing + doubly-stochastic)
+│       ├── _fine.py            ← EM-ICP (annealing + doubly-stochastic)
+│       └── _numba_kernels.py   ← JIT-compiled kernels (Numba)
 └── tests/
     └── test_symmetry.py
 ```
-
----
-
-## Differences from the C++ ZZ_SYMC tool
-
-| Aspect | C++ ZZ_SYMC | clarcs / pyclarcs |
-|---|---|---|
-| VTK I/O | VTK C++ library | `vtk` Python package (VTK 9+) |
-| Supported formats | `.vtk` only | `.vtk`, `.vtp`, `.vtu`, `.ply`, `.stl`, `.obj` |
-| Linear algebra | newmat, GSL, LAPACK | `numpy.linalg` |
-| KD-tree | custom C kdtree | `scipy.spatial.KDTree` |
-| Initialisation | manual or auto (interactive) | auto or from file |
-| Interactive mode | yes (VTK window) | no |
-| Platform | Linux (Docker) | Linux, macOS, Windows |
-| Distribution | Docker image | PyPI (`pip install clarcs`) |
-| Column-sum bug in EM_ICPSymCorresSym | present (latent, harmless) | fixed |
 
 ---
 
