@@ -206,6 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="clarcs",
         description="CLARCS — tools for 3-D surface analysis.",
+        usage=(
+            "clarcs <command> [options]\n\n"
+            "Commands:\n"
+            "  sym-plane   Automatic symmetry plane estimation for a 3-D surface\n\n"
+            "Run  clarcs <command> --help  for command-specific options."
+        ),
     )
     subparsers = p.add_subparsers(dest="subcommand", metavar="COMMAND")
     subparsers.required = True
