@@ -1,51 +1,60 @@
 """
-Command-line interface for pyclarcs.
+Command-line interface for clarcs.
 
-Replicates the ZZ_SYMC CLI:
-    ZZ_SYMC -i <input> [-o <output>] [-O <plan>] [--init auto|<file>] ...
+clarcs is the top-level command; sub-commands provide specific tools:
 
-Usage examples::
+    clarcs sym-plane <input> [output] [--save-plane] [options]
 
-    pyclarcs -i surface.vtk -O results/plane -o results/symmetric.vtk
-    pyclarcs -i surface.vtk --init plane.pl -O results/plane
-    pyclarcs -i surface.vtk --no-fine --no-sym -O results/plane
+Examples::
+
+    clarcs sym-plane surface.vtk
+    clarcs sym-plane surface.vtk plane.vtk
+    clarcs sym-plane surface.vtk --save-plane
+    clarcs sym-plane surface.vtk --init plane.pl --save-plane
+    clarcs sym-plane surface.vtk --no-fine --no-sym
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
-import numpy as np
 
+# ---------------------------------------------------------------------------
+# sym-plane sub-command
+# ---------------------------------------------------------------------------
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="pyclarcs",
+def _build_sym_plane_parser(subparsers) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "sym-plane",
+        help="Automatic symmetry plane estimation for a 3-D surface.",
         description=(
-            "Automatic symmetry plane estimation for 3-D surfaces. "
-            "Python port of the ZZ_SYMC tool from the CLARCS project."
+            "Find the best symmetry plane of a 3-D surface (e.g. endocranial). "
+            "Writes a VTK patch visualising the plane to OUTPUT (auto-named when omitted). "
+            "Use --save-plane to also write the plane parameters (.pl)."
         ),
     )
     p.add_argument(
-        "-i", "--input",
-        required=True,
-        metavar="FILE",
+        "input",
+        metavar="INPUT",
         help="Input .vtk surface file.",
     )
     p.add_argument(
-        "-o", "--output",
-        default="",
-        metavar="FILE",
-        help="Output .vtk file: the input surface reflected through the estimated plane.",
+        "output",
+        nargs="?",
+        default=None,
+        metavar="OUTPUT",
+        help=(
+            "Output .vtk file for the symmetry plane patch. "
+            "Defaults to <INPUT_STEM>-sym-plane<EXT>."
+        ),
     )
     p.add_argument(
-        "-O", "--Output",
-        default="",
-        metavar="PREFIX",
+        "--save-plane",
+        action="store_true",
         help=(
-            "Output prefix for the symmetry plane files. "
-            "Writes <PREFIX>.pl (plane parameters) and <PREFIX>.vtk (plane patch)."
+            "Also save the plane parameters to <OUTPUT_STEM>.pl."
         ),
     )
     p.add_argument(
@@ -86,11 +95,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
+def _run_sym_plane(args: argparse.Namespace) -> int:
     verbose = args.verbose and not args.quiet
+
+    # ------------------------------------------------------------------
+    # Resolve output path
+    # ------------------------------------------------------------------
+    input_path = Path(args.input)
+    if args.output is None:
+        output_path = input_path.with_stem(input_path.stem + "-sym-plane")
+    else:
+        output_path = Path(args.output)
 
     # ------------------------------------------------------------------
     # Lazy imports so that the CLI stays fast when invoked with --help
@@ -163,28 +178,50 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  Final plane: {plane}")
 
     # ------------------------------------------------------------------
-    # Output: reflected surface
+    # Output: symmetry plane patch (VTK rectangular patch)
     # ------------------------------------------------------------------
-    if args.output:
-        if verbose:
-            print(f"Saving reflected surface: {args.output}")
-        reflected_pts = plane.apply(points)
-        save_surface(args.output, reflected_pts, polygons)
+    if verbose:
+        print(f"Saving symmetry plane patch: {output_path}")
+    save_plane_vtk(str(output_path), plane, bounds)
 
     # ------------------------------------------------------------------
-    # Output: symmetry plane files
+    # Output: plane parameters (optional)
     # ------------------------------------------------------------------
-    if args.Output:
-        pl_path = args.Output + ".pl"
-        vtk_path = args.Output + ".vtk"
+    if args.save_plane:
+        pl_path = output_path.with_suffix(".pl")
         if verbose:
-            print(f"Saving symmetry plane: {pl_path}  {vtk_path}")
-        plane.save(pl_path)
-        save_plane_vtk(vtk_path, plane, bounds)
+            print(f"Saving symmetry plane parameters: {pl_path}")
+        plane.save(str(pl_path))
 
     if verbose:
         print("Done.")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Top-level clarcs command
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="clarcs",
+        description="CLARCS — tools for 3-D surface analysis.",
+    )
+    subparsers = p.add_subparsers(dest="subcommand", metavar="COMMAND")
+    subparsers.required = True
+    _build_sym_plane_parser(subparsers)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.subcommand == "sym-plane":
+        return _run_sym_plane(args)
+
+    parser.print_help()
+    return 1
 
 
 if __name__ == "__main__":

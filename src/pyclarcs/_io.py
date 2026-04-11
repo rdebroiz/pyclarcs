@@ -1,99 +1,175 @@
 """
-VTK legacy file I/O using pyvtk.
+VTK-based surface I/O using the vtk Python package (VTK 9+).
 
-ROLE IN THE PIPELINE
-=====================
-The input and output of ZZ_SYMC / pyclarcs are VTK legacy files (.vtk),
-the format used throughout the CLARCS C++ library.  The data model is a
-*polydata* mesh (triangulated or polygonal surface), which stores:
-  - a list of 3-D vertex coordinates (the point cloud);
-  - a list of polygonal faces described by vertex index lists (optional).
+Supported formats (read and write)
+====================================
+Extension   Format
+----------  -------
+.vtk        VTK legacy (polydata, ASCII or binary)
+.vtp        VTK XML PolyData
+.vtu        VTK XML UnstructuredGrid  (read only — converted to polydata)
+.ply        Stanford PLY
+.stl        STereoLithography
+.obj        Wavefront OBJ
 
-The CLARCS paper uses surfaces with tens of thousands to hundreds of
-thousands of points:
-  - skull surfaces from CT scans: ~82 000 – 137 000 points
-  - subcortical structures:       ~5 000 – 10 000 points
+The format is inferred from the file extension.  ``load_surface`` always
+returns a (points, polygons) pair regardless of the source format.
+``save_surface`` always writes a PolyData mesh.
 
-This module provides three functions:
-  - ``load_surface``   : read a VTK file → (points array, face list)
-  - ``save_surface``   : write a VTK file from (points, faces, optional scalars)
-  - ``save_plane_vtk`` : write a thin rectangular patch representing the plane
-
-VTK LEGACY FORMAT
-==================
-The legacy VTK ASCII format begins with a five-line header, followed by
-POINTS, POLYGONS, and optionally POINT_DATA sections.  The ``pyvtk`` library
-transparently handles reading and writing of this format.
-
-SYMMETRY-PLANE VISUALISATION
+Symmetry-plane visualisation
 ==============================
-The C++ function ``surfaceConversion()`` (CompOnSurface/SurfaceConversion.hh)
-constructs a rectangular VTK patch that represents the symmetry plane within
-the bounding box of the surface.  ``save_plane_vtk()`` replicates this
-behaviour:
-
-  1. The centre of the rectangle is the orthogonal projection of the
-     bounding-box centre onto the plane.
-  2. Two orthonormal vectors in the plane (u, v) are constructed from
-     the cross product of n with a reference direction.
-  3. The half-side length is the diagonal of the bounding box (×margin),
-     making the patch always larger than the surface it is drawn on.
+``save_plane_vtk`` writes a rectangular quad patch centred on the
+orthogonal projection of the surface bounding-box centre onto the plane.
+The half-size equals half the bounding-box diagonal (×margin).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
-import pyvtk
+
+import vtk
+from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 
 from pyclarcs._symmetry import SymmetryPlane
 
 
 # ---------------------------------------------------------------------------
-# Loading
+# Internal helpers
 # ---------------------------------------------------------------------------
 
-def load_surface(path: str) -> tuple[np.ndarray, list[list[int]]]:
-    """Read a VTK legacy polydata file.
+def _reader_for(path: str) -> vtk.vtkAlgorithm:
+    ext = Path(path).suffix.lower()
+    readers: dict[str, type] = {
+        ".vtk": vtk.vtkPolyDataReader,
+        ".vtp": vtk.vtkXMLPolyDataReader,
+        ".vtu": vtk.vtkXMLUnstructuredGridReader,
+        ".ply": vtk.vtkPLYReader,
+        ".stl": vtk.vtkSTLReader,
+        ".obj": vtk.vtkOBJReader,
+    }
+    if ext not in readers:
+        raise ValueError(
+            f"Unsupported input format '{ext}'. "
+            f"Supported: {', '.join(readers)}"
+        )
+    reader = readers[ext]()
+    reader.SetFileName(path)
+    return reader
 
-    The function reads the file using ``pyvtk.VtkData.fromfile()``.  Both
-    ASCII and binary VTK files are supported by pyvtk.
 
-    For the purposes of the symmetry algorithm only the **point coordinates**
-    are strictly needed (the algorithm treats the surface as an unordered
-    point cloud).  Face connectivity is preserved so that it can be written
-    back when saving the reflected surface.
+def _polydata_from_reader(reader: vtk.vtkAlgorithm) -> vtk.vtkPolyData:
+    """Run the reader and return a vtkPolyData (converting UG if needed)."""
+    reader.Update()
+    output = reader.GetOutput()
 
-    Parameters
-    ----------
-    path : str
-        Path to the .vtk file.
+    # vtkUnstructuredGrid → vtkPolyData
+    if isinstance(output, vtk.vtkUnstructuredGrid):
+        geom = vtk.vtkGeometryFilter()
+        geom.SetInputData(output)
+        geom.Update()
+        output = geom.GetOutput()
 
-    Returns
-    -------
-    points : ndarray of shape (N, 3), dtype float64
-        3-D coordinates of the N surface vertices.
-    polygons : list of face index lists (may be empty for pure point clouds)
-        Each element is a list of vertex indices describing one polygon.
-    """
-    data = pyvtk.VtkData.fromfile(path)
-    structure = data.structure
+    # Ensure triangles are merged into polygons
+    clean = vtk.vtkCleanPolyData()
+    clean.SetInputData(output)
+    clean.Update()
+    return clean.GetOutput()
 
-    # Vertex coordinates — shape (N, 3)
-    points = np.array(structure.points, dtype=float)
 
-    # Face connectivity (not required by the symmetry algorithm but preserved
-    # for writing the reflected surface)
+def _polydata_to_arrays(
+    poly: vtk.vtkPolyData,
+) -> tuple[np.ndarray, list[list[int]]]:
+    """Extract (points, polygons) arrays from a vtkPolyData."""
+    vtk_pts = poly.GetPoints()
+    if vtk_pts is None or vtk_pts.GetNumberOfPoints() == 0:
+        raise ValueError("The surface contains no points.")
+
+    points = vtk_to_numpy(vtk_pts.GetData()).astype(float)   # (N, 3)
+
     polygons: list[list[int]] = []
-    if hasattr(structure, "polygons") and structure.polygons:
-        polygons = [list(f) for f in structure.polygons]
-    elif hasattr(structure, "cells") and structure.cells:
-        polygons = [list(c) for c in structure.cells]
+    cells = poly.GetPolys()
+    if cells is not None and cells.GetNumberOfCells() > 0:
+        cells.InitTraversal()
+        id_list = vtk.vtkIdList()
+        while cells.GetNextCell(id_list):
+            polygons.append([id_list.GetId(i) for i in range(id_list.GetNumberOfIds())])
 
     return points, polygons
 
 
+def _arrays_to_polydata(
+    points: np.ndarray,
+    polygons: list[list[int]],
+) -> vtk.vtkPolyData:
+    """Build a vtkPolyData from numpy arrays."""
+    vtk_pts = vtk.vtkPoints()
+    vtk_pts.SetData(numpy_to_vtk(points.astype(np.float32), deep=True))
+
+    cells = vtk.vtkCellArray()
+    for face in polygons:
+        cells.InsertNextCell(len(face))
+        for idx in face:
+            cells.InsertCellPoint(idx)
+
+    poly = vtk.vtkPolyData()
+    poly.SetPoints(vtk_pts)
+    poly.SetPolys(cells)
+    return poly
+
+
+def _writer_for(path: str, poly: vtk.vtkPolyData) -> vtk.vtkAlgorithm:
+    ext = Path(path).suffix.lower()
+
+    if ext == ".vtk":
+        w = vtk.vtkPolyDataWriter()
+        w.SetFileTypeToASCII()
+    elif ext == ".vtp":
+        w = vtk.vtkXMLPolyDataWriter()
+    elif ext == ".ply":
+        w = vtk.vtkPLYWriter()
+    elif ext == ".stl":
+        w = vtk.vtkSTLWriter()
+    elif ext == ".obj":
+        w = vtk.vtkOBJWriter()
+    else:
+        raise ValueError(
+            f"Unsupported output format '{ext}'. "
+            f"Supported: .vtk, .vtp, .ply, .stl, .obj"
+        )
+
+    w.SetFileName(path)
+    w.SetInputData(poly)
+    return w
+
+
 # ---------------------------------------------------------------------------
-# Saving
+# Public API — loading
+# ---------------------------------------------------------------------------
+
+def load_surface(path: str) -> tuple[np.ndarray, list[list[int]]]:
+    """Read a surface file into (points, polygons).
+
+    Parameters
+    ----------
+    path : str
+        Path to the surface file (.vtk, .vtp, .vtu, .ply, .stl, .obj).
+
+    Returns
+    -------
+    points : ndarray (N, 3), float64
+        Vertex coordinates.
+    polygons : list of face index lists
+        Each element is a list of vertex indices for one face.
+    """
+    reader = _reader_for(path)
+    poly = _polydata_from_reader(reader)
+    return _polydata_to_arrays(poly)
+
+
+# ---------------------------------------------------------------------------
+# Public API — saving
 # ---------------------------------------------------------------------------
 
 def save_surface(
@@ -103,47 +179,37 @@ def save_surface(
     scalars: np.ndarray | None = None,
     scalars_name: str = "scalars",
 ) -> None:
-    """Write a VTK legacy polydata file.
+    """Write a surface to file.
 
-    This function is used both to save the *reflected* surface (the symmetric
-    image of the input with respect to the estimated plane) and to save any
-    intermediate surface with per-vertex scalar data (e.g. asymmetry fields).
-
-    The output is always ASCII format for maximum compatibility.
+    The output format is determined by the file extension.
 
     Parameters
     ----------
     path : str
-        Output .vtk path.
+        Output path (.vtk, .vtp, .ply, .stl, .obj).
     points : ndarray (N, 3)
         Vertex coordinates.
     polygons : list of face index lists, optional
-        If omitted or empty, only the point cloud is written (no faces).
+        Omit or pass [] for a point-cloud-only file.
     scalars : ndarray (N,), optional
-        Per-vertex scalar field (e.g. asymmetry norm or distance field).
-        If provided, written as a POINT_DATA SCALARS block.
+        Per-vertex scalar field (written as POINT_DATA).
+        Not supported by all writers (.stl, .obj ignore it).
     scalars_name : str
-        Name tag for the scalar array inside the VTK file (default "scalars").
+        Name for the scalar array.
     """
-    pts_list = points.tolist()
-    polys = polygons if polygons is not None else []
-
-    structure = pyvtk.PolyData(points=pts_list, polygons=polys)
+    poly = _arrays_to_polydata(points, polygons or [])
 
     if scalars is not None:
-        # Attach per-vertex scalar field (e.g. asymmetry magnitude)
-        point_data = pyvtk.PointData(
-            pyvtk.Scalars(scalars.tolist(), name=scalars_name, lookup_table="default")
-        )
-        vtk_data = pyvtk.VtkData(structure, point_data)
-    else:
-        vtk_data = pyvtk.VtkData(structure)
+        vtk_scalars = numpy_to_vtk(scalars.astype(np.float32), deep=True)
+        vtk_scalars.SetName(scalars_name)
+        poly.GetPointData().SetScalars(vtk_scalars)
 
-    vtk_data.tofile(path, "ascii")
+    writer = _writer_for(path, poly)
+    writer.Write()
 
 
 # ---------------------------------------------------------------------------
-# Symmetry-plane visualisation patch
+# Public API — symmetry-plane visualisation patch
 # ---------------------------------------------------------------------------
 
 def save_plane_vtk(
@@ -152,76 +218,47 @@ def save_plane_vtk(
     bounds: tuple[float, float, float, float, float, float],
     margin: float = 1.05,
 ) -> None:
-    """Write a rectangular VTK patch representing the symmetry plane.
+    """Write a rectangular patch visualising the symmetry plane.
 
-    The patch is centred on the orthogonal projection of the bounding-box
-    centre onto the plane, and is large enough to cover the entire surface.
-    This mirrors the ``surfaceConversion(Plane p, ...)`` function from
-    ``CompOnSurface/SurfaceConversion.hh`` in the C++ codebase.
-
-    Construction
-    ------------
-    Let  c   = centre of the bounding box.
-    Let  c'  = projection of c onto the plane  (= c − (n·c − d) n).
-    Let  diag = length of the bounding-box diagonal.
-
-    Two orthonormal in-plane vectors are built as:
-        u = (n × ref) / ||n × ref||     where ref is a vector not parallel to n
-        v = n × u
-
-    The four corners of the rectangle are then:
-        c' ± half·u  ±  half·v
-    with  half = diag × margin / 2.
+    The patch is centred on the orthogonal projection of the surface
+    bounding-box centre onto the plane, and sized to cover the entire surface.
 
     Parameters
     ----------
     path : str
-        Output .vtk path for the plane patch.
+        Output path. Extension determines format (.vtk, .vtp, .ply, …).
     plane : SymmetryPlane
     bounds : (xmin, xmax, ymin, ymax, zmin, zmax)
-        Axis-aligned bounding box of the input surface, used to size and
-        centre the rectangular patch.
     margin : float
-        Factor by which the patch is enlarged beyond the bounding box diagonal
-        (default 1.05 → 5% larger than the diagonal).
+        Enlargement factor applied to the bounding-box diagonal (default 1.05).
     """
     xmin, xmax, ymin, ymax, zmin, zmax = bounds
 
-    # Centre of the bounding box
-    box_centre = np.array(
-        [(xmin + xmax) / 2.0,
-         (ymin + ymax) / 2.0,
-         (zmin + zmax) / 2.0]
-    )
+    box_centre = np.array([
+        (xmin + xmax) / 2.0,
+        (ymin + ymax) / 2.0,
+        (zmin + zmax) / 2.0,
+    ])
 
-    # Half-size of the rectangle = half the bounding-box diagonal (with margin)
-    box_diag = np.linalg.norm([xmax - xmin, ymax - ymin, zmax - zmin])
+    box_diag = float(np.linalg.norm([xmax - xmin, ymax - ymin, zmax - zmin]))
     half = box_diag * margin / 2.0
 
-    # Project the bounding-box centre onto the plane:
-    #   c' = c − (n·c − d) n
-    plane_centre = plane.project(box_centre)
+    plane_centre = np.asarray(plane.project(box_centre)).flatten()
 
-    # Build two orthonormal vectors spanning the symmetry plane.
-    # The cross product  n × ref  is guaranteed to lie in the plane
-    # (perpendicular to n) and be non-zero as long as ref ∦ n.
     n = plane.n
     ref = np.array([1.0, 0.0, 0.0])
-    if abs(np.dot(n, ref)) > 0.9:   # n is nearly parallel to x → use y
+    if abs(float(np.dot(n, ref))) > 0.9:
         ref = np.array([0.0, 1.0, 0.0])
-    u = np.cross(n, ref);  u /= np.linalg.norm(u)
-    v = np.cross(n, u);    v /= np.linalg.norm(v)
+    u = np.cross(n, ref)
+    u = u / float(np.linalg.norm(u))
+    v = np.cross(n, u)
+    v = v / float(np.linalg.norm(v))
 
-    # Four corners of the rectangular patch (counter-clockwise winding)
-    corners = [
-        plane_centre + half * u + half * v,   # top-right
-        plane_centre - half * u + half * v,   # top-left
-        plane_centre - half * u - half * v,   # bottom-left
-        plane_centre + half * u - half * v,   # bottom-right
-    ]
+    corners = np.array([
+        plane_centre + half * u + half * v,
+        plane_centre - half * u + half * v,
+        plane_centre - half * u - half * v,
+        plane_centre + half * u - half * v,
+    ], dtype=float)
 
-    points = [c.tolist() for c in corners]
-    polygons = [[0, 1, 2, 3]]   # one quad face
-
-    structure = pyvtk.PolyData(points=points, polygons=polygons)
-    pyvtk.VtkData(structure).tofile(path, "ascii")
+    save_surface(path, corners, [[0, 1, 2, 3]])

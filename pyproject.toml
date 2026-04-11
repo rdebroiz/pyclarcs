@@ -25,10 +25,11 @@ classifiers = [
 dependencies = [
     "numpy>=1.21",
     "scipy>=1.7",
-    "pyvtk>=0.5",
+    "vtk>=9.0",
 ]
 
 [project.scripts]
+clarcs = "pyclarcs._cli:main"
 pyclarcs = "pyclarcs._cli:main"
 
 [project.optional-dependencies]
