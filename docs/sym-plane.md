@@ -10,12 +10,7 @@ The algorithm finds the plane that best "superimposes the left and right parts"
 of an approximately bilateral surface.  It is formulated as a MAP problem and
 solved with an EM algorithm:
 
-$$
-\delta^2(X^1, X^2) = \min_{A,\, T} \left[
-  \sum_{i,j} A_{ij} \| x_i - T(x_j) \|^2
-  + 2\sigma^2 \sum_{i,j} A_{ij} \log A_{ij}
-\right]
-$$
+$$\delta^2(X^1, X^2) = \min_{A,\, T} \left[ \sum_{i,j} A_{ij} \| x_i - T(x_j) \|^2 + 2\sigma^2 \sum_{i,j} A_{ij} \log A_{ij} \right]$$
 
 with $X^1 = X^2 = X$ (same surface), $T$ a reflection, and $A$ a fuzzy
 correspondence matrix.

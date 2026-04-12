@@ -25,15 +25,11 @@ clarcs rescale INPUT [OUTPUT] --target TARGET [options]
 
 The transform combines a uniform scale and a translation:
 
-$$
-T(\mathbf{x}) = s \cdot \mathbf{x} + (\bar{\mathbf{t}} - \bar{\mathbf{s}})
-$$
+$$T(\mathbf{x}) = s \cdot \mathbf{x} + (\bar{\mathbf{t}} - \bar{\mathbf{s}})$$
 
 where the scale factor is:
 
-$$
-s = \frac{\bar{d}_\text{target}}{\bar{d}_\text{source}}
-$$
+$$s = \frac{\bar{d}_\text{target}}{\bar{d}_\text{source}}$$
 
 and $\bar{d}$ is the mean Euclidean distance from each point to its cloud's
 centroid (dispersion).  Applying the scale first then translating ensures that

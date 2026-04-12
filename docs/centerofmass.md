@@ -25,9 +25,7 @@ clarcs centerofmass INPUT [OUTPUT] --target TARGET [options]
 
 The transform is a pure translation:
 
-$$
-T(\mathbf{x}) = \mathbf{x} + (\bar{\mathbf{t}} - \bar{\mathbf{s}})
-$$
+$$T(\mathbf{x}) = \mathbf{x} + (\bar{\mathbf{t}} - \bar{\mathbf{s}})$$
 
 where $\bar{\mathbf{s}}$ is the centroid of the input surface and
 $\bar{\mathbf{t}}$ is the centroid of the target surface.
