@@ -11,8 +11,8 @@ Surfaces produced
    Left + right hemispheres merged.  Best free proxy for an endocranial
    surface: the pial surface is the outermost cortical surface and closely
    follows the inner skull table.
-   Requires: ~/.cache/pyclarcs/pial_Full_ply/{lh,rh}.pial.ply
-             (downloaded automatically by demo_symmetry.py)
+   Downloaded automatically from brainder.org and cached in
+   ~/.cache/pyclarcs/pial_Full_ply/ on first run.
 
 2. endocranium_mni_pial_10k.vtk
    Same as (1) but decimated to ~10 000 points for fast unit tests.
@@ -42,15 +42,17 @@ Surfaces produced
 
 Usage
 -----
-    python generate_samples.py              # generate all
-    python generate_samples.py --no-mni    # skip MNI (requires cache)
+    python generate_samples.py              # generate all (downloads MNI on first run)
+    python generate_samples.py --no-mni    # skip MNI surfaces
     python generate_samples.py --no-reg    # skip registration pairs
 """
 
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -66,11 +68,65 @@ if _SRC.exists():
 from pyclarcs.io import load_surface, save_surface  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# MNI pial surface paths
+# MNI pial surface — download constants
 # ---------------------------------------------------------------------------
-_CACHE = Path.home() / ".cache" / "pyclarcs" / "pial_Full_ply"
-LH_PLY = _CACHE / "lh.pial.ply"
-RH_PLY = _CACHE / "rh.pial.ply"
+_MNI_URL = (
+    "https://s3.us-east-2.amazonaws.com/brainder/software/"
+    "brain4blender/smallfiles/pial_Full_ply.tar.bz2"
+)
+_CACHE_DIR   = Path.home() / ".cache" / "pyclarcs"
+_ARCHIVE     = _CACHE_DIR / "pial_Full_ply.tar.bz2"
+_CACHE       = _CACHE_DIR / "pial_Full_ply"
+LH_PLY       = _CACHE / "lh.pial.ply"
+RH_PLY       = _CACHE / "rh.pial.ply"
+
+
+def _dl_progress(block_count: int, block_size: int, total: int) -> None:
+    downloaded = block_count * block_size
+    if total > 0:
+        pct = min(100, 100 * downloaded / total)
+        bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+        print(f"\r  [{bar}] {pct:5.1f}%  {downloaded/1e6:.1f}/{total/1e6:.1f} MB",
+              end="", flush=True)
+
+
+def download_mni_pial(verbose: bool = True) -> None:
+    """Download and extract the Brain for Blender pial surfaces if not cached.
+
+    Files are stored in ~/.cache/pyclarcs/ and reused on subsequent calls.
+    Licence: Creative Commons Attribution 4.0 International (A. Winkler).
+    """
+    if LH_PLY.exists() and RH_PLY.exists():
+        if verbose:
+            print(f"  Cache found: {_CACHE}")
+        return
+
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not _ARCHIVE.exists():
+        if verbose:
+            print("Downloading MNI pial surface from brainder.org…")
+            print(f"  {_MNI_URL}")
+        urllib.request.urlretrieve(
+            _MNI_URL, _ARCHIVE,
+            reporthook=_dl_progress if verbose else None,
+        )
+        if verbose:
+            print()
+
+    if verbose:
+        print("Extracting archive…")
+    result = subprocess.run(
+        ["tar", "xjf", str(_ARCHIVE), "-C", str(_CACHE_DIR)],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Extraction failed: {result.stderr.decode()}\n"
+            "Make sure 'tar' and 'bzip2' are installed."
+        )
+    if verbose:
+        print(f"  → {_CACHE}")
 
 
 # ---------------------------------------------------------------------------
@@ -246,14 +302,8 @@ def _decimate_vtk(
 # ---------------------------------------------------------------------------
 
 def gen_mni_pial(out_dir: Path, verbose: bool = True) -> None:
-    """Convert the Brain for Blender pial surfaces (LH+RH) to VTK."""
-    if not (LH_PLY.exists() and RH_PLY.exists()):
-        print(
-            "  SKIP endocranium_mni_pial.vtk — cache not found.\n"
-            "  Run  python demo_symmetry.py  once to download it.",
-            file=sys.stderr,
-        )
-        return
+    """Download (if needed) and convert the Brain for Blender pial surfaces to VTK."""
+    download_mni_pial(verbose=verbose)
 
     if verbose:
         print("Loading LH + RH pial surfaces…")
@@ -372,7 +422,7 @@ def main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--no-mni", action="store_true",
-                        help="Skip MNI pial surfaces (no cache needed).")
+                        help="Skip MNI pial surfaces (skips download).")
     parser.add_argument("--no-reg", action="store_true",
                         help="Skip registration test pairs (*_target.vtk).")
     parser.add_argument("-q", "--quiet", action="store_true")
