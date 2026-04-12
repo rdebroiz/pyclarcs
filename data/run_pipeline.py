@@ -7,8 +7,12 @@ generate_samples.py.
 
 Pipeline (per pair)
 -------------------
-  1. normalize   — match the target's size and centre-of-mass to ref
-  2. nlregister  — non-rigid EM-ICP to warp the normalized target onto ref
+  1. symplane    — estimate the symmetry plane of each surface independently
+  2. recenter    — align each surface's symmetry plane to x = 0
+  3. normalize   — match the recentered target's size and centre-of-mass to
+                   the recentered reference
+  4. nlregister  — non-rigid EM-ICP to warp the normalized target onto the
+                   recentered reference
 
 All intermediate and final surfaces are written to OUTPUT_DIR.
 """
@@ -43,7 +47,7 @@ _PAIRS = {
 
 
 # ---------------------------------------------------------------------------
-# Pipeline steps
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 def _invoke(cli, args: list[str]) -> "click.testing.Result":
@@ -52,7 +56,7 @@ def _invoke(cli, args: list[str]) -> "click.testing.Result":
     return CliRunner().invoke(cli, args, catch_exceptions=True)
 
 
-def _check(result, step: str, out_path: Path) -> None:
+def _check(result, step: str) -> None:
     """Raise SystemExit with full diagnostics if the step failed."""
     if result.exit_code == 0:
         return
@@ -68,10 +72,66 @@ def _check(result, step: str, out_path: Path) -> None:
     raise SystemExit(1)
 
 
+# ---------------------------------------------------------------------------
+# Pipeline steps
+# ---------------------------------------------------------------------------
+
+def _step_symplane(
+    surface_path: Path, out_dir: Path, verbose: bool
+) -> tuple[Path, Path]:
+    """Estimate the symmetry plane of *surface_path*.
+
+    Returns
+    -------
+    (vtk_path, pl_path)
+        Path to the saved plane patch (.vtk) and the plane parameters (.pl).
+    """
+    from pyclarcs._cli import cli
+
+    out_path = out_dir / (surface_path.stem + "-symplane.vtk")
+    # --save-plane writes <out_stem>.pl alongside the vtk
+    args = ["symplane", str(surface_path), str(out_path), "--save-plane"]
+    if not verbose:
+        args.append("-q")
+
+    t0 = time.perf_counter()
+    result = _invoke(cli, args)
+    elapsed = time.perf_counter() - t0
+
+    _check(result, f"symplane({surface_path.name})")
+    if verbose:
+        click.echo(result.output, nl=False)
+    pl_path = out_path.with_suffix(".pl")
+    click.echo(f"  symplane   → {out_path.name}  ({elapsed:.1f} s)")
+    return out_path, pl_path
+
+
+def _step_recenter(
+    surface_path: Path, pl_path: Path, out_dir: Path, verbose: bool
+) -> Path:
+    """Align *surface_path* to the canonical symmetry plane (x = 0)."""
+    from pyclarcs._cli import cli
+
+    out_path = out_dir / (surface_path.stem + "-recentered.vtk")
+    args = ["recenter", str(surface_path), str(out_path), "--plane", str(pl_path)]
+    if not verbose:
+        args.append("-q")
+
+    t0 = time.perf_counter()
+    result = _invoke(cli, args)
+    elapsed = time.perf_counter() - t0
+
+    _check(result, f"recenter({surface_path.name})")
+    if verbose:
+        click.echo(result.output, nl=False)
+    click.echo(f"  recenter   → {out_path.name}  ({elapsed:.1f} s)")
+    return out_path
+
+
 def _step_normalize(
     target_path: Path, ref_path: Path, out_dir: Path, verbose: bool
 ) -> Path:
-    """Step 1 — match size and centre-of-mass to reference."""
+    """Match *target_path* centre-of-mass and scale to *ref_path*."""
     from pyclarcs._cli import cli
 
     out_path = out_dir / (target_path.stem + "-normalized.vtk")
@@ -83,12 +143,11 @@ def _step_normalize(
     result = _invoke(cli, args)
     elapsed = time.perf_counter() - t0
 
-    _check(result, "normalize", out_path)
+    _check(result, f"normalize({target_path.name})")
     if verbose:
         click.echo(result.output, nl=False)
     click.echo(f"  normalize  → {out_path.name}  ({elapsed:.1f} s)")
     return out_path
-
 
 
 def _step_nlregister(
@@ -98,7 +157,7 @@ def _step_nlregister(
     reg_kwargs: dict,
     verbose: bool,
 ) -> Path:
-    """Step 2 — non-rigid EM-ICP registration."""
+    """Non-rigid EM-ICP registration of *normalized_path* onto *ref_path*."""
     from pyclarcs._cli import cli
 
     out_path = out_dir / (normalized_path.stem + "-nlregistered.vtk")
@@ -124,7 +183,7 @@ def _step_nlregister(
     result = _invoke(cli, args)
     elapsed = time.perf_counter() - t0
 
-    _check(result, "nlregister", out_path)
+    _check(result, f"nlregister({normalized_path.name})")
     if verbose:
         click.echo(result.output, nl=False)
     click.echo(f"  nlregister → {out_path.name}  ({elapsed:.1f} s)")
@@ -189,7 +248,11 @@ def main(
     sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
     quiet,
 ):
-    """Run the clarcs pipeline (normalize → nlregister) on test pairs."""
+    """Run the clarcs pipeline (symplane → recenter → normalize → nlregister).
+
+    Both the reference and the target surfaces are independently recentered
+    to their own symmetry plane before the non-rigid registration step.
+    """
     verbose = not quiet
     selected = list(pairs) if pairs else list(_PAIRS)
     output_dir = Path(output_dir).resolve()
@@ -227,13 +290,25 @@ def main(
         click.echo(f"  out  : {output_dir}/")
         click.echo(sep)
 
-        normalized = _step_normalize(tgt_path, ref_path, output_dir, verbose)
+        # Step 1 — symmetry planes (ref and target independently)
+        _, ref_pl  = _step_symplane(ref_path,  output_dir, verbose)
+        _, tgt_pl  = _step_symplane(tgt_path,  output_dir, verbose)
+
+        # Step 2 — recenter both surfaces to x = 0
+        ref_recentered = _step_recenter(ref_path, ref_pl,  output_dir, verbose)
+        tgt_recentered = _step_recenter(tgt_path, tgt_pl,  output_dir, verbose)
+
+        # Step 3 — normalize recentered target to match recentered reference
+        tgt_normalized = _step_normalize(
+            tgt_recentered, ref_recentered, output_dir, verbose
+        )
 
         if not no_nlregister:
+            # Step 4 — register normalized target onto recentered reference
             registered = _step_nlregister(
-                normalized, ref_path, output_dir, reg_kwargs, verbose
+                tgt_normalized, ref_recentered, output_dir, reg_kwargs, verbose
             )
-            _print_summary(ref_path, tgt_path, registered)
+            _print_summary(ref_recentered, tgt_recentered, registered)
 
     elapsed_total = time.perf_counter() - t_global
     click.echo(f"\nTotal time: {elapsed_total:.1f} s")
