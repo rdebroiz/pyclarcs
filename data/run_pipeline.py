@@ -230,17 +230,17 @@ def _print_summary(ref_path: Path, target_path: Path, registered_path: Path) -> 
 )
 @click.option("--no-nlregister", is_flag=True,
               help="Stop after normalize (skip the EM-ICP step).")
-@click.option("--sigma",        default=3.0,   show_default=True, type=float,
+@click.option("--sigma",        default=10.0,  show_default=True, type=float,
               help="Initial bandwidth of the correspondence kernel.")
 @click.option("--beta",         default=100.0, show_default=True, type=float,
               help="Regularisation weight (higher = smoother).")
-@click.option("--dist-cutoff",  default=25.0,  show_default=True, type=float,
+@click.option("--dist-cutoff",  default=30.0,  show_default=True, type=float,
               help="Maximum search radius for correspondences.")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
 @click.option("--icm-iter",     default=120,   show_default=True, type=int,
               help="Number of Jacobi ICM steps per outer iteration.")
-@click.option("--period-sigma", default=40,    show_default=True, type=int,
+@click.option("--period-sigma", default=20,    show_default=True, type=int,
               help="Halve sigma every this many iterations.")
 @click.option("-q", "--quiet",  is_flag=True, help="Suppress all output.")
 def main(

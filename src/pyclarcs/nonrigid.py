@@ -23,7 +23,7 @@ Notation
 Outer loop (max_iter iterations)
 ---------------------------------
 
-E-step — doubly-stochastic fuzzy correspondences (two-pass, O(N+M) memory)
+E-step — doubly-stochastic fuzzy correspondences
   For each vertex i:
       T_i = x_i + d_i                       (current transformed position)
 
@@ -40,13 +40,9 @@ E-step — doubly-stochastic fuzzy correspondences (two-pass, O(N+M) memory)
       Total weight:  W_i  = Σ_j ṽ_ij
       Target point:  ȳ_i  = (Σ_j ṽ_ij y_j) / W_i
 
-  The E-step is split into two chunked passes so that the KDTree
-  query results are never accumulated into a large sparse matrix:
-    Pass 1 — stream through all vertices in batches of `e_chunk` to
-             accumulate sR_i and sC_j.
-    Pass 2 — repeat the same batched query and use the pre-computed
-             inverses to accumulate W_i and ȳ_i directly.
-  Peak extra memory per pass: O(e_chunk × avg_neighbours).
+  Implementation: a single chunked KDTree pass builds the COO arrays
+  (rows, cols, weights).  Row/col sums and barycentres are then computed
+  with numpy bincount — no N×M sparse matrix is ever constructed.
 
 M-step — Jacobi ICM (icm_iter inner iterations)
   For each i:
@@ -67,7 +63,7 @@ DEFAULT PARAMETERS (matching the original C++ NonLinearRegistration)
   icm_iter     = 120    inner Jacobi steps per outer iteration
   period_sigma = 40     sigma halved every 40 outer iterations
   sigma_min    = 0.1
-  e_chunk      = 2000   vertices per KDTree query batch (memory cap)
+  e_chunk      = 2000   vertices per KDTree query batch
 """
 
 from __future__ import annotations
@@ -119,6 +115,8 @@ def nonrigid_icp(
         Symmetric mesh adjacency matrix (from ``mesh.adjacency_csr``).
     sigma : float
         Initial bandwidth of the exponential correspondence kernel.
+        Should be on the order of the expected initial surface-to-surface
+        distance (e.g. set to dist_cutoff / 3 or larger for coarse alignment).
     beta : float
         Regularisation weight (higher → smoother deformation).
     dist_cutoff : float
@@ -133,7 +131,7 @@ def nonrigid_icp(
         Minimum value of sigma (annealing floor).
     e_chunk : int
         Number of vertices processed per KDTree query batch in the E-step.
-        Reduce to lower peak memory at the cost of more Python overhead.
+        Has no effect on results; lower values reduce peak memory.
     verbose : bool
         Print iteration progress.
 
@@ -162,19 +160,18 @@ def nonrigid_icp(
         transformed = mov_pts + def_field  # (N, 3)
 
         # ------------------------------------------------------------
-        # E-step: doubly-stochastic correspondences — two chunked passes
+        # E-step: build COO arrays in a single chunked pass, then
+        # compute doubly-stochastic barycentres without a N×M matrix.
         # ------------------------------------------------------------
-        # Pass 1 — accumulate row sums sR_i and column sums sC_j
-        # without storing all neighbour lists simultaneously.
-        # ------------------------------------------------------------
-        row_sums = np.zeros(N, dtype=float)
-        col_sums = np.zeros(M, dtype=float)
-        has_corr = False
+        rows_parts: list[np.ndarray] = []
+        cols_parts: list[np.ndarray] = []
+        wvals_parts: list[np.ndarray] = []
 
         for start in range(0, N, e_chunk):
             end = min(start + e_chunk, N)
             nbrs_chunk = ref_tree.query_ball_point(
-                transformed[start:end], dist_cutoff, return_sorted=False
+                transformed[start:end], dist_cutoff,
+                return_sorted=False, workers=-1,
             )
             for local_i, nbrs in enumerate(nbrs_chunk):
                 if not nbrs:
@@ -188,52 +185,44 @@ def nonrigid_icp(
                 if len(nbrs_v) == 0:
                     continue
                 wv = np.exp(-dists[valid] / sigma)
-                row_sums[i] += wv.sum()
-                np.add.at(col_sums, nbrs_v, wv)
-                has_corr = True
+                rows_parts.append(np.full(len(nbrs_v), i, dtype=np.int32))
+                cols_parts.append(nbrs_v)
+                wvals_parts.append(wv)
 
-        if not has_corr:
+        if not rows_parts:
             if verbose:
                 print(f"  iter {it:3d}: no correspondences — stopping early.")
             break
 
-        nz_r = row_sums > 0.0
+        rows  = np.concatenate(rows_parts)
+        cols  = np.concatenate(cols_parts)
+        wvals = np.concatenate(wvals_parts)
+        del rows_parts, cols_parts, wvals_parts
+
+        # Row / column sums
+        row_sums = np.bincount(rows, weights=wvals, minlength=N)
+        col_sums = np.bincount(cols, weights=wvals, minlength=M)
+
         row_inv = np.zeros(N)
+        nz_r = row_sums > 0.0
         row_inv[nz_r] = 1.0 / row_sums[nz_r]
 
-        nz_c = col_sums > 0.0
         col_inv = np.zeros(M)
+        nz_c = col_sums > 0.0
         col_inv[nz_c] = 1.0 / col_sums[nz_c]
 
-        # ------------------------------------------------------------
-        # Pass 2 — compute doubly-stochastic barycentres
-        #   ṽ_ij = w_ij · (1/sC_j + 1/sR_i)
-        #   W_i  = Σ_j ṽ_ij
-        #   ȳ_i  = (Σ_j ṽ_ij · y_j) / W_i
-        # ------------------------------------------------------------
-        weight_out = np.zeros(N, dtype=float)
-        corresBary = np.zeros((N, 3), dtype=float)
+        # Doubly-stochastic weights: ṽ_ij = w_ij·(1/sC_j + 1/sR_i)
+        v_tilde = wvals * (col_inv[cols] + row_inv[rows])
+        del wvals
 
-        for start in range(0, N, e_chunk):
-            end = min(start + e_chunk, N)
-            nbrs_chunk = ref_tree.query_ball_point(
-                transformed[start:end], dist_cutoff, return_sorted=False
+        # Weighted barycentre per moving vertex
+        weight_out = np.bincount(rows, weights=v_tilde, minlength=N)
+        corresBary = np.empty((N, 3), dtype=float)
+        for k in range(3):
+            corresBary[:, k] = np.bincount(
+                rows, weights=v_tilde * ref_pts[cols, k], minlength=N
             )
-            for local_i, nbrs in enumerate(nbrs_chunk):
-                if not nbrs:
-                    continue
-                i = start + local_i
-                nbrs_arr = np.asarray(nbrs, dtype=np.int32)
-                diffs    = ref_pts[nbrs_arr] - transformed[i]
-                dists    = np.linalg.norm(diffs, axis=1)
-                valid    = (ref_normals[nbrs_arr] @ mov_normals[i]) >= 0.0
-                nbrs_v   = nbrs_arr[valid]
-                if len(nbrs_v) == 0:
-                    continue
-                wv      = np.exp(-dists[valid] / sigma)
-                v_tilde = wv * (col_inv[nbrs_v] + row_inv[i])
-                weight_out[i] = v_tilde.sum()
-                corresBary[i] = (v_tilde[:, np.newaxis] * ref_pts[nbrs_v]).sum(axis=0)
+        del v_tilde, rows, cols
 
         inlier_mask = weight_out > 0.0
         corresBary[inlier_mask] /= weight_out[inlier_mask, np.newaxis]
