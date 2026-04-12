@@ -217,11 +217,22 @@ def rescale(input_path, output_path, target, quiet):
 @cli.command("recenter")
 @click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
 @click.argument("output_path", metavar="OUTPUT", required=False, default=None)
-@click.option("--plane", required=True, type=click.Path(exists=True), metavar="PLANE",
-              help="Symmetry plane file (.pl) from  clarcs sym-plane --save-plane.")
+@click.option("--plane", required=False, default=None,
+              type=click.Path(exists=True), metavar="PLANE",
+              help=(
+                  "Symmetry plane file (.pl). "
+                  "If omitted, the plane is computed automatically "
+                  "(equivalent to running  clarcs sym-plane  first)."
+              ))
+@click.option("--save-plane", is_flag=True,
+              help="Save the (computed or loaded) plane to <OUTPUT_STEM>.pl.")
 @_verbose_option
-def recenter(input_path, output_path, plane, quiet):
-    """Rigidly align a surface so its symmetry plane coincides with x = 0."""
+def recenter(input_path, output_path, plane, save_plane, quiet):
+    """Rigidly align a surface so its symmetry plane coincides with x = 0.
+
+    If --plane is omitted the symmetry plane is estimated automatically
+    from the surface itself before applying the alignment.
+    """
     verbose = not quiet
 
     if output_path is None:
@@ -235,18 +246,39 @@ def recenter(input_path, output_path, plane, quiet):
         click.echo(f"Loading surface: {input_path}")
     points, polygons = load_surface(input_path)
 
-    if verbose:
-        click.echo(f"Loading symmetry plane: {plane}")
-    sym_plane = SymmetryPlane.load(plane)
-    if verbose:
-        click.echo(f"  {sym_plane}")
-        click.echo("Aligning to canonical symmetry plane (n=[1,0,0], d=0)…")
+    if plane is not None:
+        if verbose:
+            click.echo(f"Loading symmetry plane: {plane}")
+        sym_plane = SymmetryPlane.load(plane)
+        if verbose:
+            click.echo(f"  {sym_plane}")
+    else:
+        if verbose:
+            click.echo("No plane provided — estimating symmetry plane…")
+        from pyclarcs.principal_axes import best_principal_axis_plane
+        from pyclarcs.coarse import coarse_symmetry
+        from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
 
+        sym_plane = best_principal_axis_plane(points)
+        sym_plane = coarse_symmetry(points, sym_plane, verbose=verbose)
+        sym_plane = em_icp_sym(points, sym_plane, verbose=verbose)
+        sym_plane = em_icp_sym_corres(points, sym_plane, verbose=verbose)
+        if verbose:
+            click.echo(f"  Estimated plane: {sym_plane}")
+
+    if verbose:
+        click.echo("Aligning to canonical symmetry plane (n=[1,0,0], d=0)…")
     result = align_to_symmetry_plane(points, sym_plane)
 
     if verbose:
         click.echo(f"Saving: {output_path}")
     save_surface(output_path, result, polygons)
+
+    if save_plane:
+        pl_path = str(Path(output_path).with_suffix(".pl"))
+        if verbose:
+            click.echo(f"Saving plane parameters: {pl_path}")
+        sym_plane.save(pl_path)
 
     if verbose:
         click.echo("Done.")

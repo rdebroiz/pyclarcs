@@ -196,23 +196,26 @@ The scale factor is the ratio of mean distances to the centroid (dispersion).
 Rigidly align a surface so its symmetry plane coincides with the canonical plane `n=[1,0,0], d=0` (the YZ plane at x = 0).
 
 ```bash
-clarcs recenter INPUT [OUTPUT] --plane PLANE.pl
+clarcs recenter INPUT [OUTPUT] [--plane PLANE.pl] [--save-plane]
 ```
 
 | Argument / Flag | Description |
 |---|---|
 | `INPUT` | Surface to align |
 | `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-recentered<EXT>` |
-| `--plane PLANE.pl` | Symmetry plane file produced by `clarcs sym-plane --save-plane` (required) |
-
-**Typical workflow:**
+| `--plane PLANE.pl` | Symmetry plane file (optional). If omitted, the plane is estimated automatically from the surface |
+| `--save-plane` | Save the plane parameters to `<OUTPUT_STEM>.pl` |
 
 ```bash
-# 1. Estimate the symmetry plane and save its parameters
-clarcs sym-plane skull.vtk --save-plane
+# Automatic: estimate the plane and recenter in one step
+clarcs recenter skull.vtk
 
-# 2. Align the surface to the canonical frame
+# With a pre-computed plane (faster, skips estimation)
+clarcs sym-plane skull.vtk --save-plane
 clarcs recenter skull.vtk --plane skull-sym-plane.pl
+
+# Estimate, recenter, and save the plane for later use
+clarcs recenter skull.vtk --save-plane
 ```
 
 ---
