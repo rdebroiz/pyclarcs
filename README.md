@@ -66,12 +66,12 @@ file extension):
 
 | Command | Description | Documentation |
 |---|---|---|
-| [`clarcs sym-plane`](docs/sym-plane.md) | Estimate the best bilateral symmetry plane | [docs/sym-plane.md](docs/sym-plane.md) |
-| [`clarcs centerofmass`](docs/centerofmass.md) | Translate a surface to match a reference's centre of mass | [docs/centerofmass.md](docs/centerofmass.md) |
-| [`clarcs rescale`](docs/rescale.md) | Translate and uniformly scale a surface to match a reference | [docs/rescale.md](docs/rescale.md) |
+| [`clarcs reorient`](docs/reorient.md) | Permute the coordinate axes of a surface | [docs/reorient.md](docs/reorient.md) |
+| [`clarcs symplane`](docs/symplane.md) | Estimate the best bilateral symmetry plane | [docs/symplane.md](docs/symplane.md) |
 | [`clarcs recenter`](docs/recenter.md) | Rigidly align a surface to the canonical symmetry plane | [docs/recenter.md](docs/recenter.md) |
-| [`clarcs orient`](docs/orient.md) | Permute the coordinate axes of a surface | [docs/orient.md](docs/orient.md) |
-| [`clarcs register`](docs/register.md) | Non-rigidly register a surface onto a reference (EM-ICP) | [docs/register.md](docs/register.md) |
+| [`clarcs centerofmass`](docs/centerofmass.md) | Translate a surface to match a reference's centre of mass | [docs/centerofmass.md](docs/centerofmass.md) |
+| [`clarcs normalize`](docs/normalize.md) | Translate and uniformly scale a surface to match a reference | [docs/normalize.md](docs/normalize.md) |
+| [`clarcs nlregister`](docs/nlregister.md) | Non-rigidly register a surface onto a reference (EM-ICP) | [docs/nlregister.md](docs/nlregister.md) |
 
 ---
 
@@ -82,14 +82,14 @@ The commands are designed to be chained.  A complete registration workflow
 
 ```bash
 # 1. Align target's symmetry plane to x = 0
-clarcs recenter  target.vtk  target-recentered.vtk  --save-plane
+clarcs recenter   target.vtk  target-recentered.vtk  --save-plane
 
 # 2. Match size and centre of mass to the reference
-clarcs rescale   target-recentered.vtk  target-rescaled.vtk  --target ref.vtk
+clarcs normalize  target-recentered.vtk  target-normalized.vtk  --target ref.vtk
 
 # 3. Non-rigid EM-ICP onto the reference
-clarcs register  target-rescaled.vtk  ref.vtk  target-registered.vtk \
-                 --deformation target-deformation.vtk
+clarcs nlregister target-normalized.vtk  ref.vtk  target-nlregistered.vtk \
+                  --deformation target-deformation.vtk
 ```
 
 `data/run_pipeline.py` automates this sequence on the test surfaces bundled
@@ -149,12 +149,12 @@ pyclarcs/
 ├── pyproject.toml              ← packaging (PyPI-ready, installs as clarcs)
 ├── README.md
 ├── docs/                       ← per-command documentation
-│   ├── sym-plane.md
-│   ├── centerofmass.md
-│   ├── rescale.md
+│   ├── reorient.md
+│   ├── symplane.md
 │   ├── recenter.md
-│   ├── orient.md
-│   └── register.md
+│   ├── centerofmass.md
+│   ├── normalize.md
+│   └── nlregister.md
 ├── data/                       ← test surfaces and pipeline scripts
 │   ├── generate_samples.py     ← generate synthetic + MNI surfaces and test pairs
 │   └── run_pipeline.py         ← run recenter → rescale → register end-to-end

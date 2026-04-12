@@ -30,7 +30,7 @@ translation) that maps $n \to [1, 0, 0]$ and the plane point $n \cdot d \to 0$.
 Pairwise distances between all points are preserved exactly.
 
 When `--plane` is omitted, the plane is estimated automatically by running
-the full symmetry-plane pipeline (`clarcs sym-plane` equivalent):
+the full symmetry-plane pipeline (`clarcs symplane` equivalent):
 
 1. Initialisation via principal axes of inertia
 2. Coarse ICP with trimmed estimator
@@ -46,8 +46,8 @@ the full symmetry-plane pipeline (`clarcs sym-plane` equivalent):
 clarcs recenter skull.vtk
 
 # With a pre-computed plane (faster, skips estimation)
-clarcs sym-plane skull.vtk --save-plane
-clarcs recenter skull.vtk --plane skull-sym-plane.pl
+clarcs symplane skull.vtk --save-plane
+clarcs recenter skull.vtk --plane skull-symplane.pl
 
 # Estimate, recenter, and save the (canonical) plane for later use
 clarcs recenter skull.vtk --save-plane

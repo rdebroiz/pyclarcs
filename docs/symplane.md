@@ -1,4 +1,4 @@
-# `clarcs sym-plane` — symmetry plane estimation
+# `clarcs symplane` — symmetry plane estimation
 
 Find the best bilateral symmetry plane of a 3-D surface.
 
@@ -29,7 +29,7 @@ The implementation runs four successive stages:
 ## Usage
 
 ```bash
-clarcs sym-plane INPUT [OUTPUT] [--save-plane] [options]
+clarcs symplane INPUT [OUTPUT] [--save-plane] [options]
 ```
 
 **Arguments:**
@@ -37,7 +37,7 @@ clarcs sym-plane INPUT [OUTPUT] [--save-plane] [options]
 | Argument | Description |
 |---|---|
 | `INPUT` | Input surface file (any supported format) |
-| `OUTPUT` | Output file for the symmetry plane patch. Defaults to `<INPUT_STEM>-sym-plane<EXT>` |
+| `OUTPUT` | Output file for the symmetry plane patch. Defaults to `<INPUT_STEM>-symplane<EXT>` |
 
 **Options:**
 
@@ -48,7 +48,6 @@ clarcs sym-plane INPUT [OUTPUT] [--save-plane] [options]
 | `--no-coarse` | Skip the coarse ICP stage |
 | `--no-fine` | Skip the EM-ICP annealing stage |
 | `--no-sym` | Skip the doubly-stochastic refinement |
-| `-v / --verbose` | Print progress (default: on) |
 | `-q / --quiet` | Suppress all output |
 
 ---
@@ -56,28 +55,28 @@ clarcs sym-plane INPUT [OUTPUT] [--save-plane] [options]
 ## Examples
 
 ```bash
-# Estimate symmetry plane → produces surface-sym-plane.vtk
-clarcs sym-plane surface.vtk
+# Estimate symmetry plane → produces surface-symplane.vtk
+clarcs symplane surface.vtk
 
 # Custom output name
-clarcs sym-plane surface.vtk results/plane.vtk
+clarcs symplane surface.vtk results/plane.vtk
 
 # Also save plane parameters (.pl file)
-clarcs sym-plane surface.vtk --save-plane
+clarcs symplane surface.vtk --save-plane
 
 # Load a pre-existing initial plane
-clarcs sym-plane surface.vtk --init previous.pl --save-plane
+clarcs symplane surface.vtk --init previous.pl --save-plane
 
 # Coarse stage only (skip EM)
-clarcs sym-plane surface.vtk --no-fine --no-sym
+clarcs symplane surface.vtk --no-fine --no-sym
 
 # Works with any supported format
-clarcs sym-plane brain.ply --save-plane
-clarcs sym-plane skull.stl results/skull-plane.vtp
+clarcs symplane brain.ply --save-plane
+clarcs symplane skull.stl results/skull-plane.vtp
 
 # Batch processing
 for f in input/*.vtk; do
-    clarcs sym-plane "$f" "output/$(basename $f .vtk)-plane.vtk" --save-plane -q
+    clarcs symplane "$f" "output/$(basename $f .vtk)-plane.vtk" --save-plane -q
 done
 ```
 

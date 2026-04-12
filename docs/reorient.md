@@ -1,4 +1,4 @@
-# `clarcs orient` — axis permutation
+# `clarcs reorient` — axis permutation
 
 Permute the coordinate axes of a surface.
 
@@ -7,7 +7,7 @@ Permute the coordinate axes of a surface.
 ## Usage
 
 ```bash
-clarcs orient INPUT [OUTPUT] --axes X Y Z [options]
+clarcs reorient INPUT [OUTPUT] --axes X Y Z [options]
 ```
 
 **Arguments and options:**
@@ -15,7 +15,7 @@ clarcs orient INPUT [OUTPUT] --axes X Y Z [options]
 | Argument / Flag | Description |
 |---|---|
 | `INPUT` | Input surface |
-| `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-oriented<EXT>` |
+| `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-reoriented<EXT>` |
 | `--axes X Y Z` | Destination indices for the current x, y, z axes (default: `0 1 2` = identity) |
 | `-q / --quiet` | Suppress all output |
 
@@ -39,13 +39,13 @@ error.
 
 ```bash
 # Identity (no change)
-clarcs orient surface.vtk --axes 0 1 2
+clarcs reorient surface.vtk --axes 0 1 2
 
 # Swap x and z axes
-clarcs orient surface.vtk --axes 2 1 0
+clarcs reorient surface.vtk --axes 2 1 0
 
 # Cyclic permutation x→1, y→2, z→0
-clarcs orient surface.vtk --axes 1 2 0
+clarcs reorient surface.vtk --axes 1 2 0
 ```
 
 ---
@@ -60,5 +60,5 @@ pts, poly = load_surface("surface.vtk")
 
 # Swap x and z
 result = reorient_axes(pts, x_to=2, y_to=1, z_to=0)
-save_surface("surface-oriented.vtk", result, poly)
+save_surface("surface-reoriented.vtk", result, poly)
 ```

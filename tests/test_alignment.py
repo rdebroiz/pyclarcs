@@ -5,7 +5,7 @@ test_centerofmass_* : align_center_of_mass
 test_rescale_*      : align_rescale
 test_orient_*       : reorient_axes
 test_recenter_*     : align_to_symmetry_plane
-test_cli_*          : Click CLI commands (centerofmass, rescale, recenter, orient)
+test_cli_*          : Click CLI commands (centerofmass, normalize, recenter, reorient)
 """
 
 import numpy as np
@@ -222,7 +222,7 @@ def test_cli_centerofmass(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# CLI — rescale
+# CLI — normalize
 # ---------------------------------------------------------------------------
 
 def test_cli_rescale(tmp_path):
@@ -239,7 +239,7 @@ def test_cli_rescale(tmp_path):
     save_surface(tgt_file, tgt_pts, _triangles(len(tgt_pts)))
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["rescale", src_file, out_file, "--target", tgt_file, "-q"])
+    result = runner.invoke(cli, ["normalize", src_file, out_file, "--target", tgt_file, "-q"])
     assert result.exit_code == 0, result.output
 
     out_pts, _ = load_surface(out_file)
@@ -249,7 +249,7 @@ def test_cli_rescale(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# CLI — orient
+# CLI — reorient
 # ---------------------------------------------------------------------------
 
 def test_cli_orient_swap(tmp_path):
@@ -263,7 +263,7 @@ def test_cli_orient_swap(tmp_path):
     save_surface(src_file, pts, _triangles(len(pts)))
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["orient", src_file, out_file, "--axes", "2", "1", "0", "-q"])
+    result = runner.invoke(cli, ["reorient", src_file, out_file, "--axes", "2", "1", "0", "-q"])
     assert result.exit_code == 0, result.output
 
     out_pts, _ = load_surface(out_file)

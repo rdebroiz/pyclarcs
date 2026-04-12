@@ -1,12 +1,12 @@
 """
 Command-line interface for clarcs (Click-based).
 
-    clarcs sym-plane    INPUT [OUTPUT] [--save-plane] [options]
-    clarcs centerofmass INPUT [OUTPUT] --target TARGET
-    clarcs rescale      INPUT [OUTPUT] --target TARGET
+    clarcs reorient     INPUT [OUTPUT] --axes   X Y Z
+    clarcs symplane     INPUT [OUTPUT] [--save-plane] [options]
     clarcs recenter     INPUT [OUTPUT] --plane  PLANE.pl
-    clarcs orient       INPUT [OUTPUT] --axes   X Y Z
-    clarcs register     INPUT REF     [OUTPUT] [--deformation FIELD] [options]
+    clarcs centerofmass INPUT [OUTPUT] --target TARGET
+    clarcs normalize    INPUT [OUTPUT] --target TARGET
+    clarcs nlregister   INPUT REF     [OUTPUT] [--deformation FIELD] [options]
 """
 
 from __future__ import annotations
@@ -44,10 +44,52 @@ def cli():
 
 
 # ---------------------------------------------------------------------------
-# sym-plane
+# reorient
 # ---------------------------------------------------------------------------
 
-@cli.command("sym-plane")
+@cli.command("reorient")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--axes", nargs=3, type=int, default=(0, 1, 2), metavar="X Y Z",
+              show_default=True,
+              help="Destination column indices for the current x, y, z axes.")
+@_verbose_option
+def reorient(input_path, output_path, axes, quiet):
+    """Permute the coordinate axes of a surface.
+
+    Example: --axes 2 1 0 swaps x and z.
+    """
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-reoriented")
+
+    from pyclarcs.io import load_surface, save_surface
+    from pyclarcs.alignment import reorient_axes
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons = load_surface(input_path)
+
+    x_to, y_to, z_to = axes
+    if verbose:
+        click.echo(f"Permuting axes: x→{x_to}, y→{y_to}, z→{z_to}")
+
+    result = reorient_axes(points, x_to, y_to, z_to)
+
+    if verbose:
+        click.echo(f"Saving: {output_path}")
+    save_surface(output_path, result, polygons)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
+# symplane
+# ---------------------------------------------------------------------------
+
+@cli.command("symplane")
 @click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
 @click.argument("output_path", metavar="OUTPUT", required=False, default=None)
 @click.option("--save-plane", is_flag=True,
@@ -58,12 +100,12 @@ def cli():
 @click.option("--no-fine",   is_flag=True, help="Skip the EM-ICP annealing stage.")
 @click.option("--no-sym",    is_flag=True, help="Skip the doubly-stochastic refinement.")
 @_verbose_option
-def sym_plane(input_path, output_path, save_plane, init, no_coarse, no_fine, no_sym, quiet):
+def symplane(input_path, output_path, save_plane, init, no_coarse, no_fine, no_sym, quiet):
     """Find the best bilateral symmetry plane of a 3-D surface."""
     verbose = not quiet
 
     if output_path is None:
-        output_path = _default_output(input_path, "-sym-plane")
+        output_path = _default_output(input_path, "-symplane")
 
     from pyclarcs.io import load_surface, save_plane_vtk
     from pyclarcs.principal_axes import best_principal_axis_plane
@@ -132,86 +174,6 @@ def sym_plane(input_path, output_path, save_plane, init, no_coarse, no_fine, no_
 
 
 # ---------------------------------------------------------------------------
-# centerofmass
-# ---------------------------------------------------------------------------
-
-@cli.command("centerofmass")
-@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
-@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
-@click.option("--target", required=True, type=click.Path(exists=True), metavar="TARGET",
-              help="Reference surface whose centre of mass to match.")
-@_verbose_option
-def centerofmass(input_path, output_path, target, quiet):
-    """Translate a surface to align its centre of mass with a reference."""
-    verbose = not quiet
-
-    if output_path is None:
-        output_path = _default_output(input_path, "-centerofmass")
-
-    from pyclarcs.io import load_surface, save_surface
-    from pyclarcs.alignment import align_center_of_mass
-
-    if verbose:
-        click.echo(f"Loading surface: {input_path}")
-    points, polygons = load_surface(input_path)
-
-    if verbose:
-        click.echo(f"Loading target: {target}")
-    target_pts, _ = load_surface(target)
-
-    if verbose:
-        click.echo("Aligning centres of mass…")
-    result = align_center_of_mass(points, target_pts)
-
-    if verbose:
-        click.echo(f"Saving: {output_path}")
-    save_surface(output_path, result, polygons)
-
-    if verbose:
-        click.echo("Done.")
-
-
-# ---------------------------------------------------------------------------
-# rescale
-# ---------------------------------------------------------------------------
-
-@cli.command("rescale")
-@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
-@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
-@click.option("--target", required=True, type=click.Path(exists=True), metavar="TARGET",
-              help="Reference surface to match.")
-@_verbose_option
-def rescale(input_path, output_path, target, quiet):
-    """Translate and uniformly scale a surface to match a reference's size and position."""
-    verbose = not quiet
-
-    if output_path is None:
-        output_path = _default_output(input_path, "-rescale")
-
-    from pyclarcs.io import load_surface, save_surface
-    from pyclarcs.alignment import align_rescale
-
-    if verbose:
-        click.echo(f"Loading surface: {input_path}")
-    points, polygons = load_surface(input_path)
-
-    if verbose:
-        click.echo(f"Loading target: {target}")
-    target_pts, _ = load_surface(target)
-
-    if verbose:
-        click.echo("Rescaling to match target centre of mass and dispersion…")
-    result = align_rescale(points, target_pts)
-
-    if verbose:
-        click.echo(f"Saving: {output_path}")
-    save_surface(output_path, result, polygons)
-
-    if verbose:
-        click.echo("Done.")
-
-
-# ---------------------------------------------------------------------------
 # recenter
 # ---------------------------------------------------------------------------
 
@@ -223,7 +185,7 @@ def rescale(input_path, output_path, target, quiet):
               help=(
                   "Symmetry plane file (.pl). "
                   "If omitted, the plane is computed automatically "
-                  "(equivalent to running  clarcs sym-plane  first)."
+                  "(equivalent to running  clarcs symplane  first)."
               ))
 @click.option("--save-plane", is_flag=True,
               help="Save the (computed or loaded) plane to <OUTPUT_STEM>.pl.")
@@ -286,38 +248,36 @@ def recenter(input_path, output_path, plane, save_plane, quiet):
 
 
 # ---------------------------------------------------------------------------
-# orient
+# centerofmass
 # ---------------------------------------------------------------------------
 
-@cli.command("orient")
+@cli.command("centerofmass")
 @click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
 @click.argument("output_path", metavar="OUTPUT", required=False, default=None)
-@click.option("--axes", nargs=3, type=int, default=(0, 1, 2), metavar="X Y Z",
-              show_default=True,
-              help="Destination column indices for the current x, y, z axes.")
+@click.option("--target", required=True, type=click.Path(exists=True), metavar="TARGET",
+              help="Reference surface whose centre of mass to match.")
 @_verbose_option
-def orient(input_path, output_path, axes, quiet):
-    """Permute the coordinate axes of a surface.
-
-    Example: --axes 2 1 0 swaps x and z.
-    """
+def centerofmass(input_path, output_path, target, quiet):
+    """Translate a surface to align its centre of mass with a reference."""
     verbose = not quiet
 
     if output_path is None:
-        output_path = _default_output(input_path, "-oriented")
+        output_path = _default_output(input_path, "-centerofmass")
 
     from pyclarcs.io import load_surface, save_surface
-    from pyclarcs.alignment import reorient_axes
+    from pyclarcs.alignment import align_center_of_mass
 
     if verbose:
         click.echo(f"Loading surface: {input_path}")
     points, polygons = load_surface(input_path)
 
-    x_to, y_to, z_to = axes
     if verbose:
-        click.echo(f"Permuting axes: x→{x_to}, y→{y_to}, z→{z_to}")
+        click.echo(f"Loading target: {target}")
+    target_pts, _ = load_surface(target)
 
-    result = reorient_axes(points, x_to, y_to, z_to)
+    if verbose:
+        click.echo("Aligning centres of mass…")
+    result = align_center_of_mass(points, target_pts)
 
     if verbose:
         click.echo(f"Saving: {output_path}")
@@ -328,10 +288,50 @@ def orient(input_path, output_path, axes, quiet):
 
 
 # ---------------------------------------------------------------------------
-# register
+# normalize
 # ---------------------------------------------------------------------------
 
-@cli.command("register")
+@cli.command("normalize")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--target", required=True, type=click.Path(exists=True), metavar="TARGET",
+              help="Reference surface to match.")
+@_verbose_option
+def normalize(input_path, output_path, target, quiet):
+    """Translate and uniformly scale a surface to match a reference's size and position."""
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-normalized")
+
+    from pyclarcs.io import load_surface, save_surface
+    from pyclarcs.alignment import align_rescale
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons = load_surface(input_path)
+
+    if verbose:
+        click.echo(f"Loading target: {target}")
+    target_pts, _ = load_surface(target)
+
+    if verbose:
+        click.echo("Normalizing to match target centre of mass and dispersion…")
+    result = align_rescale(points, target_pts)
+
+    if verbose:
+        click.echo(f"Saving: {output_path}")
+    save_surface(output_path, result, polygons)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
+# nlregister
+# ---------------------------------------------------------------------------
+
+@cli.command("nlregister")
 @click.argument("input_path", metavar="INPUT", type=click.Path(exists=True))
 @click.argument("ref_path",   metavar="REF",   type=click.Path(exists=True))
 @click.argument("output_path", metavar="OUTPUT", required=False, default=None)
@@ -350,10 +350,10 @@ def orient(input_path, output_path, axes, quiet):
 @click.option("--period-sigma", default=40,   show_default=True, type=int,
               help="Halve sigma every this many iterations.")
 @_verbose_option
-def register(input_path, ref_path, output_path, deformation,
-             sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
-             quiet):
-    """Non-rigidly register INPUT onto REF using EM-ICP.
+def nlregister(input_path, ref_path, output_path, deformation,
+               sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
+               quiet):
+    """Non-linearly register INPUT onto REF using EM-ICP.
 
     Outputs the warped INPUT surface.  Optionally saves the per-vertex
     deformation field as a VTK file with VECTORS point data.
@@ -361,7 +361,7 @@ def register(input_path, ref_path, output_path, deformation,
     verbose = not quiet
 
     if output_path is None:
-        output_path = _default_output(input_path, "-registered")
+        output_path = _default_output(input_path, "-nlregistered")
 
     from pyclarcs.io import (
         load_surface_with_normals, save_surface, save_deformation_vtk,
@@ -387,7 +387,7 @@ def register(input_path, ref_path, output_path, deformation,
 
     if verbose:
         click.echo(
-            f"Non-rigid EM-ICP  "
+            f"Non-linear EM-ICP  "
             f"σ={sigma}  β={beta}  r={dist_cutoff}  "
             f"iter={max_iter}×{icm_iter}"
         )

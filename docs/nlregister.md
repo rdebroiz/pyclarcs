@@ -1,4 +1,4 @@
-# `clarcs register` — non-rigid surface registration
+# `clarcs nlregister` — non-rigid surface registration
 
 Non-rigidly register a moving surface onto a reference using EM-ICP with a
 graph-Laplacian regularisation on the deformation field.
@@ -8,7 +8,7 @@ graph-Laplacian regularisation on the deformation field.
 ## Usage
 
 ```bash
-clarcs register INPUT REF [OUTPUT] [--deformation FIELD] [options]
+clarcs nlregister INPUT REF [OUTPUT] [--deformation FIELD] [options]
 ```
 
 **Arguments and options:**
@@ -17,7 +17,7 @@ clarcs register INPUT REF [OUTPUT] [--deformation FIELD] [options]
 |---|---|
 | `INPUT` | Moving surface (any supported format) |
 | `REF` | Reference surface |
-| `OUTPUT` | Warped output surface. Defaults to `<INPUT_STEM>-registered<EXT>` |
+| `OUTPUT` | Warped output surface. Defaults to `<INPUT_STEM>-nlregistered<EXT>` |
 | `--deformation FIELD` | Save the per-vertex deformation field to this VTK file (VECTORS point data) |
 | `--sigma F` | Initial bandwidth of the correspondence kernel (default: `3.0`) |
 | `--beta F` | Regularisation weight — higher = smoother field (default: `100.0`) |
@@ -73,26 +73,26 @@ surface.
 
 ```bash
 # Basic registration
-clarcs register target.vtk reference.vtk registered.vtk
+clarcs nlregister target.vtk reference.vtk registered.vtk
 
 # Also save the deformation field for ParaView visualisation
-clarcs register target.vtk reference.vtk registered.vtk \
-               --deformation field.vtk
+clarcs nlregister target.vtk reference.vtk registered.vtk \
+                  --deformation field.vtk
 
 # Fewer iterations for a quick preview
-clarcs register target.vtk reference.vtk --max-iter 20 --icm-iter 60
+clarcs nlregister target.vtk reference.vtk --max-iter 20 --icm-iter 60
 
 # Stronger regularisation (smoother deformation)
-clarcs register target.vtk reference.vtk --beta 500
+clarcs nlregister target.vtk reference.vtk --beta 500
 ```
 
 ### Typical full pipeline
 
 ```bash
-clarcs recenter  target.vtk  target-rc.vtk  --save-plane
-clarcs rescale   target-rc.vtk  target-rcs.vtk  --target reference.vtk
-clarcs register  target-rcs.vtk  reference.vtk  target-registered.vtk \
-                 --deformation target-deformation.vtk
+clarcs recenter   target.vtk  target-rc.vtk  --save-plane
+clarcs normalize  target-rc.vtk  target-rcs.vtk  --target reference.vtk
+clarcs nlregister target-rcs.vtk  reference.vtk  target-registered.vtk \
+                  --deformation target-deformation.vtk
 ```
 
 The helper script `data/run_pipeline.py` automates this sequence on the

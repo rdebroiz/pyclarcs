@@ -1,4 +1,4 @@
-# `clarcs rescale` — scale and centre-of-mass alignment
+# `clarcs normalize` — scale and centre-of-mass alignment
 
 Translate and uniformly scale a surface to match a reference's position and size.
 
@@ -7,7 +7,7 @@ Translate and uniformly scale a surface to match a reference's position and size
 ## Usage
 
 ```bash
-clarcs rescale INPUT [OUTPUT] --target TARGET [options]
+clarcs normalize INPUT [OUTPUT] --target TARGET [options]
 ```
 
 **Arguments and options:**
@@ -15,7 +15,7 @@ clarcs rescale INPUT [OUTPUT] --target TARGET [options]
 | Argument / Flag | Description |
 |---|---|
 | `INPUT` | Surface to move / rescale |
-| `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-rescale<EXT>` |
+| `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-normalized<EXT>` |
 | `--target TARGET` | Reference surface (required) |
 | `-q / --quiet` | Suppress all output |
 
@@ -40,11 +40,11 @@ both the size and the centre of mass of the result match the target.
 ## Examples
 
 ```bash
-# Rescale and reposition skull.vtk to match reference.vtk
-clarcs rescale skull.vtk aligned.vtk --target reference.vtk
+# Normalize skull.vtk to match reference.vtk
+clarcs normalize skull.vtk aligned.vtk --target reference.vtk
 
-# Default output name → skull-rescale.vtk
-clarcs rescale skull.vtk --target reference.vtk
+# Default output name → skull-normalized.vtk
+clarcs normalize skull.vtk --target reference.vtk
 ```
 
 ---

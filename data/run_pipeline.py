@@ -7,9 +7,9 @@ generate_samples.py.
 
 Pipeline (per pair)
 -------------------
-  1. recenter  — align the target's symmetry plane to x = 0
-  2. rescale   — match the recentered target's size and centre-of-mass to ref
-  3. register  — non-rigid EM-ICP to warp the rescaled target onto ref
+  1. recenter    — align the target's symmetry plane to x = 0
+  2. normalize   — match the recentered target's size and centre-of-mass to ref
+  3. nlregister  — non-rigid EM-ICP to warp the normalized target onto ref
 
 All intermediate and final surfaces are written to OUTPUT_DIR.
 
@@ -21,8 +21,8 @@ Examples
 --------
     python run_pipeline.py results/
     python run_pipeline.py results/ --pairs ellipsoid_skull_noisy
-    python run_pipeline.py results/ --no-register   # only recenter + rescale
-    python run_pipeline.py results/ -q              # quiet
+    python run_pipeline.py results/ --no-nlregister   # only recenter + normalize
+    python run_pipeline.py results/ -q                # quiet
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def _step_recenter(
     return out_path
 
 
-def _step_rescale(
+def _step_normalize(
     recentered_path: Path,
     ref_path: Path,
     out_dir: Path,
@@ -102,10 +102,10 @@ def _step_rescale(
     from pyclarcs._cli import cli
     from click.testing import CliRunner
 
-    out_path = out_dir / (recentered_path.stem + "-rescaled.vtk")
+    out_path = out_dir / (recentered_path.stem + "-normalized.vtk")
 
     args = [
-        "rescale",
+        "normalize",
         str(recentered_path),
         str(out_path),
         "--target", str(ref_path),
@@ -118,17 +118,17 @@ def _step_rescale(
     elapsed = time.perf_counter() - t0
 
     if result.exit_code != 0:
-        print(f"  [ERROR] rescale failed:\n{result.output}", file=sys.stderr)
+        print(f"  [ERROR] normalize failed:\n{result.output}", file=sys.stderr)
         sys.exit(1)
 
     if verbose:
         print(result.output, end="")
-    print(f"  rescale    → {out_path.name}  ({elapsed:.1f} s)")
+    print(f"  normalize  → {out_path.name}  ({elapsed:.1f} s)")
     return out_path
 
 
-def _step_register(
-    rescaled_path: Path,
+def _step_nlregister(
+    normalized_path: Path,
     ref_path: Path,
     out_dir: Path,
     reg_kwargs: dict,
@@ -138,12 +138,12 @@ def _step_register(
     from pyclarcs._cli import cli
     from click.testing import CliRunner
 
-    out_path  = out_dir / (rescaled_path.stem + "-registered.vtk")
-    def_path  = out_dir / (rescaled_path.stem + "-deformation.vtk")
+    out_path  = out_dir / (normalized_path.stem + "-nlregistered.vtk")
+    def_path  = out_dir / (normalized_path.stem + "-deformation.vtk")
 
     args = [
-        "register",
-        str(rescaled_path),
+        "nlregister",
+        str(normalized_path),
         str(ref_path),
         str(out_path),
         "--deformation", str(def_path),
@@ -162,12 +162,12 @@ def _step_register(
     elapsed = time.perf_counter() - t0
 
     if result.exit_code != 0:
-        print(f"  [ERROR] register failed:\n{result.output}", file=sys.stderr)
+        print(f"  [ERROR] nlregister failed:\n{result.output}", file=sys.stderr)
         sys.exit(1)
 
     if verbose:
         print(result.output, end="")
-    print(f"  register   → {out_path.name}  ({elapsed:.1f} s)")
+    print(f"  nlregister → {out_path.name}  ({elapsed:.1f} s)")
     print(f"  deformation→ {def_path.name}")
     return out_path
 
@@ -217,8 +217,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
-        "--no-register", action="store_true",
-        help="Stop after rescale (skip the EM-ICP step).",
+        "--no-nlregister", action="store_true",
+        help="Stop after normalize (skip the EM-ICP step).",
     )
     # Registration parameters
     parser.add_argument("--sigma",        type=float, default=3.0,   metavar="F")
@@ -271,13 +271,13 @@ def main(argv: list[str] | None = None) -> None:
         # -- Step 1 : recenter
         recentered = _step_recenter(tgt_path, output_dir, verbose)
 
-        # -- Step 2 : rescale
-        rescaled = _step_rescale(recentered, ref_path, output_dir, verbose)
+        # -- Step 2 : normalize
+        normalized = _step_normalize(recentered, ref_path, output_dir, verbose)
 
-        # -- Step 3 : register (optional)
-        if not args.no_register:
-            registered = _step_register(
-                rescaled, ref_path, output_dir, reg_kwargs, verbose
+        # -- Step 3 : nlregister (optional)
+        if not args.no_nlregister:
+            registered = _step_nlregister(
+                normalized, ref_path, output_dir, reg_kwargs, verbose
             )
             _print_summary(ref_path, tgt_path, registered)
 

@@ -325,9 +325,9 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
         <stem>_target.vtk
 
     Intended pipeline:
-        clarcs recenter  <target>  --plane <ref_plane.pl>
-        clarcs rescale   <recentered>  --target <ref>
-        clarcs register  <rescaled>    <ref>
+        clarcs recenter    <target>      --plane <ref_plane.pl>
+        clarcs normalize   <recentered>  --target <ref>
+        clarcs nlregister  <normalized>  <ref>
     """
     refs = [
         "ellipsoid_skull_noisy.vtk",
