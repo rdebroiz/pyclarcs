@@ -38,11 +38,11 @@ Surfaces produced
      (b) A smooth non-rigid deformation: 8 Gaussian bumps of amplitude
          3 mm spread across the surface.
    Intended to exercise the full pipeline:
-       clarcs recenter  →  clarcs rescale  →  clarcs register
+       clarcs recenter  →  clarcs normalize  →  clarcs nlregister
 
 Usage
 -----
-    python generate_samples.py              # generate all (downloads MNI on first run)
+    python generate_samples.py             # generate all (downloads MNI on first run)
     python generate_samples.py --no-mni    # skip MNI surfaces
     python generate_samples.py --no-reg    # skip registration pairs
 """
