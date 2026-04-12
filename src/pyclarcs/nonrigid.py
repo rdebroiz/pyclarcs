@@ -68,9 +68,80 @@ DEFAULT PARAMETERS (matching the original C++ NonLinearRegistration)
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from scipy.spatial import KDTree
 from scipy.sparse import csr_matrix
+
+
+# ---------------------------------------------------------------------------
+# Parameter estimation
+# ---------------------------------------------------------------------------
+
+def estimate_registration_params(
+    mov_pts: np.ndarray,
+    ref_pts: np.ndarray,
+    *,
+    max_iter: int = 80,
+    sigma_min: float = 0.1,
+    n_sample: int = 2000,
+    seed: int = 0,
+) -> dict:
+    """Estimate good EM-ICP parameters from the two input surfaces.
+
+    A random subsample of the moving surface is queried against the
+    reference KDTree to obtain the nearest-neighbour distance distribution,
+    which directly characterises the initial surface-to-surface gap.
+
+    Parameters
+    ----------
+    mov_pts : ndarray (N, 3)
+    ref_pts : ndarray (M, 3)
+    max_iter : int
+        Outer iterations (needed to compute period_sigma).
+    sigma_min : float
+        Annealing floor (needed to compute period_sigma).
+    n_sample : int
+        Number of moving points to subsample for the distance estimate.
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    dict with keys ``sigma``, ``dist_cutoff``, ``period_sigma``.
+
+    Notes
+    -----
+    Heuristics
+      sigma        = 50th percentile of NN distances (median gap)
+      dist_cutoff  = 99th percentile of NN distances × 1.5
+                     (floor: sigma × 3)
+      period_sigma = max_iter // ceil(log2(sigma / sigma_min))
+                     (number of halvings needed from sigma to sigma_min,
+                      spread evenly across the outer iterations)
+    """
+    rng = np.random.default_rng(seed)
+    mov_pts = np.asarray(mov_pts, dtype=float)
+    ref_pts = np.asarray(ref_pts, dtype=float)
+
+    idx = rng.choice(len(mov_pts), size=min(n_sample, len(mov_pts)), replace=False)
+    nn_dists, _ = KDTree(ref_pts).query(mov_pts[idx], k=1, workers=-1)
+
+    sigma = float(np.percentile(nn_dists, 50))
+    sigma = max(sigma, sigma_min * 2)          # floor: at least two halvings
+
+    dist_cutoff = float(np.percentile(nn_dists, 99)) * 1.5
+    dist_cutoff = max(dist_cutoff, sigma * 3)  # always at least 3σ
+
+    n_halvings = max(1, math.ceil(math.log2(sigma / sigma_min)))
+    period_sigma = max(1, max_iter // n_halvings)
+
+    return {
+        "sigma":        round(sigma,       4),
+        "dist_cutoff":  round(dist_cutoff, 4),
+        "period_sigma": period_sigma,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -169,13 +169,17 @@ def _step_nlregister(
         str(ref_path),
         str(out_path),
         "--deformation", str(def_path),
-        "--sigma",        str(reg_kwargs["sigma"]),
         "--beta",         str(reg_kwargs["beta"]),
-        "--dist-cutoff",  str(reg_kwargs["dist_cutoff"]),
         "--max-iter",     str(reg_kwargs["max_iter"]),
         "--icm-iter",     str(reg_kwargs["icm_iter"]),
-        "--period-sigma", str(reg_kwargs["period_sigma"]),
     ]
+    # Only pass auto-estimable params when the user explicitly overrode them.
+    if reg_kwargs["sigma"] is not None:
+        args += ["--sigma", str(reg_kwargs["sigma"])]
+    if reg_kwargs["dist_cutoff"] is not None:
+        args += ["--dist-cutoff", str(reg_kwargs["dist_cutoff"])]
+    if reg_kwargs["period_sigma"] is not None:
+        args += ["--period-sigma", str(reg_kwargs["period_sigma"])]
     if not verbose:
         args.append("-q")
 
@@ -230,18 +234,18 @@ def _print_summary(ref_path: Path, target_path: Path, registered_path: Path) -> 
 )
 @click.option("--no-nlregister", is_flag=True,
               help="Stop after normalize (skip the EM-ICP step).")
-@click.option("--sigma",        default=10.0,  show_default=True, type=float,
-              help="Initial bandwidth of the correspondence kernel.")
+@click.option("--sigma",        default=None,  type=float,
+              help="Initial bandwidth [mm] (auto-estimated if omitted).")
 @click.option("--beta",         default=100.0, show_default=True, type=float,
               help="Regularisation weight (higher = smoother).")
-@click.option("--dist-cutoff",  default=30.0,  show_default=True, type=float,
-              help="Maximum search radius for correspondences.")
+@click.option("--dist-cutoff",  default=None,  type=float,
+              help="Search radius [mm] (auto-estimated if omitted).")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
 @click.option("--icm-iter",     default=120,   show_default=True, type=int,
               help="Number of Jacobi ICM steps per outer iteration.")
-@click.option("--period-sigma", default=20,    show_default=True, type=int,
-              help="Halve sigma every this many iterations.")
+@click.option("--period-sigma", default=None,  type=int,
+              help="Halve sigma every N iterations (auto-estimated if omitted).")
 @click.option("-q", "--quiet",  is_flag=True, help="Suppress all output.")
 def main(
     output_dir, pairs, no_nlregister,

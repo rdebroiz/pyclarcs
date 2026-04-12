@@ -337,24 +337,26 @@ def normalize(input_path, output_path, target, quiet):
 @click.argument("output_path", metavar="OUTPUT", required=False, default=None)
 @click.option("--deformation", default=None, metavar="FIELD",
               help="Also save the deformation field to this VTK file.")
-@click.option("--sigma",       default=3.0,   show_default=True, type=float,
-              help="Initial bandwidth of the correspondence kernel.")
-@click.option("--beta",        default=100.0, show_default=True, type=float,
+@click.option("--sigma",        default=None,  type=float,
+              help="Initial bandwidth [mm]. Auto-estimated from surfaces if omitted.")
+@click.option("--beta",         default=100.0, show_default=True, type=float,
               help="Regularisation weight (higher = smoother).")
-@click.option("--dist-cutoff", default=15.0,  show_default=True, type=float,
-              help="Maximum search radius for correspondences.")
-@click.option("--max-iter",    default=80,    show_default=True, type=int,
+@click.option("--dist-cutoff",  default=None,  type=float,
+              help="Search radius [mm]. Auto-estimated from surfaces if omitted.")
+@click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
-@click.option("--icm-iter",    default=120,   show_default=True, type=int,
+@click.option("--icm-iter",     default=120,   show_default=True, type=int,
               help="Number of Jacobi ICM steps per outer iteration.")
-@click.option("--period-sigma", default=40,   show_default=True, type=int,
-              help="Halve sigma every this many iterations.")
-@click.option("--e-chunk",     default=2000, show_default=True, type=int,
+@click.option("--period-sigma", default=None,  type=int,
+              help="Halve sigma every this many iterations. Auto-estimated if omitted.")
+@click.option("--sigma-min",    default=0.1,   show_default=True, type=float,
+              help="Minimum sigma (annealing floor).")
+@click.option("--e-chunk",      default=2000,  show_default=True, type=int,
               help="Vertices per KDTree batch in the E-step (lower = less RAM).")
 @_verbose_option
 def nlregister(input_path, ref_path, output_path, deformation,
                sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
-               e_chunk, quiet):
+               sigma_min, e_chunk, quiet):
     """Non-linearly register INPUT onto REF using EM-ICP.
 
     Outputs the warped INPUT surface.  Optionally saves the per-vertex
@@ -383,6 +385,24 @@ def nlregister(input_path, ref_path, output_path, deformation,
     if verbose:
         click.echo(f"  {len(ref_pts)} points")
 
+    if sigma is None or dist_cutoff is None or period_sigma is None:
+        from pyclarcs.nonrigid import estimate_registration_params
+        auto = estimate_registration_params(
+            mov_pts, ref_pts,
+            max_iter=max_iter, sigma_min=sigma_min,
+        )
+        if sigma is None:
+            sigma = auto["sigma"]
+        if dist_cutoff is None:
+            dist_cutoff = auto["dist_cutoff"]
+        if period_sigma is None:
+            period_sigma = auto["period_sigma"]
+        if verbose:
+            click.echo(
+                f"Auto params:  σ={sigma}  r={dist_cutoff}"
+                f"  period_σ={period_sigma}"
+            )
+
     if verbose:
         click.echo("Building mesh adjacency…")
     adj = adjacency_csr(mov_poly, len(mov_pts))
@@ -403,6 +423,7 @@ def nlregister(input_path, ref_path, output_path, deformation,
         max_iter=max_iter,
         icm_iter=icm_iter,
         period_sigma=period_sigma,
+        sigma_min=sigma_min,
         e_chunk=e_chunk,
         verbose=verbose,
     )
