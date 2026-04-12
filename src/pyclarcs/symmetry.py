@@ -49,7 +49,7 @@ distances between each reflected source point and its corresponding target:
 
 where T(·) is the reflection through the plane (n, d).
 
-Following [Combès et al. 2008], a closed-form solution exists.
+Following the closed-form solution from the CLARCS paper (CVPR 2008):
 Let  g_s = weighted mean of source points,
      g_t = weighted mean of target points.
 
@@ -202,7 +202,7 @@ class SymmetryPlane:
     ) -> None:
         """Fit the symmetry plane so that source[i] reflects close to target[i].
 
-        This implements the closed-form M-step from [Combès et al. CVPR 2008],
+        This implements the closed-form M-step from the CLARCS paper (CVPR 2008),
         which minimises the weighted sum:
 
             Σ_i  w_i · ||target[i] − T(source[i])||²

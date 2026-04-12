@@ -14,10 +14,8 @@ reorient_axes             — permute coordinate axes
 
 Reference
 ---------
-  Abadie A., Combès B., Haegelen C., Prima S.
   "CLARCS, a C++ Library for Automated Registration and Comparison of
-  Surfaces: Medical Applications."
-  MeshMed 2011.
+  Surfaces: Medical Applications." MeshMed 2011.
 """
 
 from __future__ import annotations

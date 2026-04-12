@@ -44,8 +44,8 @@ The candidate with the lowest residual is used to initialise the optimisation.
 
 Reference
 ---------
-  Combès et al. "Automatic symmetry plane estimation of bilateral objects in
-  point clouds." CVPR 2008.  (Section 3: initialisation strategy)
+  "Automatic symmetry plane estimation of bilateral objects in point clouds."
+  CVPR 2008.  (Section 3: initialisation strategy)
 """
 
 from __future__ import annotations
