@@ -28,3 +28,9 @@ htmlcov/
 .idea/
 .vscode/
 publi.pdf
+
+# Generated data files (reproduced by data/generate_samples.py)
+data/*.vtk
+data/*.vtp
+data/*.ply
+data/*.stl
