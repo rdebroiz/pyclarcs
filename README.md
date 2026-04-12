@@ -157,6 +157,90 @@ done
 
 ---
 
+### `clarcs centerofmass` — centre-of-mass alignment
+
+Translate a surface so its centre of mass coincides with a reference surface.
+
+```bash
+clarcs centerofmass INPUT [OUTPUT] --target TARGET
+```
+
+| Argument / Flag | Description |
+|---|---|
+| `INPUT` | Surface to move |
+| `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-centerofmass<EXT>` |
+| `--target TARGET` | Reference surface (required) |
+
+---
+
+### `clarcs rescale` — scale and centre-of-mass alignment
+
+Translate and uniformly scale a surface to match a reference's position and size.
+
+```bash
+clarcs rescale INPUT [OUTPUT] --target TARGET
+```
+
+| Argument / Flag | Description |
+|---|---|
+| `INPUT` | Surface to move / rescale |
+| `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-rescale<EXT>` |
+| `--target TARGET` | Reference surface (required) |
+
+The scale factor is the ratio of mean distances to the centroid (dispersion).
+
+---
+
+### `clarcs recenter` — symmetry-plane recentering
+
+Rigidly align a surface so its symmetry plane coincides with the canonical plane `n=[1,0,0], d=0` (the YZ plane at x = 0).
+
+```bash
+clarcs recenter INPUT [OUTPUT] --plane PLANE.pl
+```
+
+| Argument / Flag | Description |
+|---|---|
+| `INPUT` | Surface to align |
+| `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-recentered<EXT>` |
+| `--plane PLANE.pl` | Symmetry plane file produced by `clarcs sym-plane --save-plane` (required) |
+
+**Typical workflow:**
+
+```bash
+# 1. Estimate the symmetry plane and save its parameters
+clarcs sym-plane skull.vtk --save-plane
+
+# 2. Align the surface to the canonical frame
+clarcs recenter skull.vtk --plane skull-sym-plane.pl
+```
+
+---
+
+### `clarcs orient` — axis permutation
+
+Permute the coordinate axes of a surface.
+
+```bash
+clarcs orient INPUT [OUTPUT] --axes X Y Z
+```
+
+| Argument / Flag | Description |
+|---|---|
+| `INPUT` | Input surface |
+| `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-oriented<EXT>` |
+| `--axes X Y Z` | Destination indices for the current x, y, z axes (default: `0 1 2` = identity) |
+
+```bash
+# Swap x and z axes
+clarcs orient surface.vtk --axes 2 1 0
+
+# Cyclic permutation x→1, y→2, z→0
+clarcs orient surface.vtk --axes 1 2 0
+```
+
+---
+
 ## Python API
 
 ```python
@@ -165,6 +249,10 @@ from pyclarcs.symmetry import SymmetryPlane
 from pyclarcs.principal_axes import best_principal_axis_plane
 from pyclarcs.coarse import coarse_symmetry
 from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
+from pyclarcs.alignment import (
+    align_center_of_mass, align_rescale,
+    align_to_symmetry_plane, reorient_axes,
+)
 
 # Load surface (any supported format)
 points, polygons = load_surface("surface.vtk")   # or .ply, .stl, .obj, .vtp …
@@ -236,6 +324,7 @@ pyclarcs/
 │       ├── io.py               ← multi-format surface I/O via VTK 9+
 │       ├── coarse.py           ← ICP + trimmed estimator, multi-resolution
 │       ├── fine.py             ← EM-ICP (annealing + doubly-stochastic)
+│       ├── alignment.py        ← centerofmass, rescale, recenter, orient
 │       └── _numba_kernels.py   ← JIT-compiled kernels (Numba, internal)
 └── tests/
     └── test_symmetry.py

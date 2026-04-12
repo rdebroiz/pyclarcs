@@ -1,129 +1,80 @@
 """
-Command-line interface for clarcs.
+Command-line interface for clarcs (Click-based).
 
-clarcs is the top-level command; sub-commands provide specific tools:
-
-    clarcs sym-plane <input> [output] [--save-plane] [options]
-
-Examples::
-
-    clarcs sym-plane surface.vtk
-    clarcs sym-plane surface.vtk plane.vtk
-    clarcs sym-plane surface.vtk --save-plane
-    clarcs sym-plane surface.vtk --init plane.pl --save-plane
-    clarcs sym-plane surface.vtk --no-fine --no-sym
+    clarcs sym-plane    INPUT [OUTPUT] [--save-plane] [options]
+    clarcs centerofmass INPUT [OUTPUT] --target TARGET
+    clarcs rescale      INPUT [OUTPUT] --target TARGET
+    clarcs recenter     INPUT [OUTPUT] --plane  PLANE.pl
+    clarcs orient       INPUT [OUTPUT] --axes   X Y Z
 """
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 
+import click
+
 
 # ---------------------------------------------------------------------------
-# sym-plane sub-command
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _build_sym_plane_parser(subparsers) -> argparse.ArgumentParser:
-    p = subparsers.add_parser(
-        "sym-plane",
-        help="Automatic symmetry plane estimation for a 3-D surface.",
-        description=(
-            "Find the best symmetry plane of a 3-D surface (e.g. endocranial). "
-            "Writes a VTK patch visualising the plane to OUTPUT (auto-named when omitted). "
-            "Use --save-plane to also write the plane parameters (.pl)."
-        ),
-    )
-    p.add_argument(
-        "input",
-        metavar="INPUT",
-        help="Input .vtk surface file.",
-    )
-    p.add_argument(
-        "output",
-        nargs="?",
-        default=None,
-        metavar="OUTPUT",
-        help=(
-            "Output .vtk file for the symmetry plane patch. "
-            "Defaults to <INPUT_STEM>-sym-plane<EXT>."
-        ),
-    )
-    p.add_argument(
-        "--save-plane",
-        action="store_true",
-        help=(
-            "Also save the plane parameters to <OUTPUT_STEM>.pl."
-        ),
-    )
-    p.add_argument(
-        "--init",
-        default="auto",
-        metavar="auto|FILE",
-        help=(
-            "'auto' (default): pick the best principal-axis plane automatically. "
-            "Or provide a path to a .pl file for a custom initial plane."
-        ),
-    )
-    p.add_argument(
-        "--no-coarse",
-        action="store_true",
-        help="Skip the coarse ICP optimisation step.",
-    )
-    p.add_argument(
-        "--no-fine",
-        action="store_true",
-        help="Skip the EM-ICP fine optimisation step.",
-    )
-    p.add_argument(
-        "--no-sym",
-        action="store_true",
-        help="Skip the doubly-stochastic EM-ICP final refinement.",
-    )
-    p.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        default=True,
-        help="Print progress information (default: on).",
-    )
-    p.add_argument(
-        "-q", "--quiet",
-        action="store_true",
-        help="Suppress all progress output.",
-    )
-    return p
+def _default_output(input_path: str, suffix: str) -> str:
+    p = Path(input_path)
+    return str(p.with_stem(p.stem + suffix))
 
 
-def _run_sym_plane(args: argparse.Namespace) -> int:
-    verbose = args.verbose and not args.quiet
+_verbose_option = click.option(
+    "-q", "--quiet", "quiet",
+    is_flag=True, default=False,
+    help="Suppress all output.",
+)
 
-    # ------------------------------------------------------------------
-    # Resolve output path
-    # ------------------------------------------------------------------
-    input_path = Path(args.input)
-    if args.output is None:
-        output_path = input_path.with_stem(input_path.stem + "-sym-plane")
-    else:
-        output_path = Path(args.output)
 
-    # ------------------------------------------------------------------
-    # Lazy imports so that the CLI stays fast when invoked with --help
-    # ------------------------------------------------------------------
-    from pyclarcs.io import load_surface, save_surface, save_plane_vtk
+# ---------------------------------------------------------------------------
+# Top-level group
+# ---------------------------------------------------------------------------
+
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(package_name="pyclarcs")
+def cli():
+    """CLARCS — tools for 3-D surface analysis."""
+
+
+# ---------------------------------------------------------------------------
+# sym-plane
+# ---------------------------------------------------------------------------
+
+@cli.command("sym-plane")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--save-plane", is_flag=True,
+              help="Also save plane parameters to <OUTPUT_STEM>.pl.")
+@click.option("--init", default="auto", metavar="auto|FILE", show_default=True,
+              help="'auto' (principal axes) or path to a .pl file.")
+@click.option("--no-coarse", is_flag=True, help="Skip the coarse ICP stage.")
+@click.option("--no-fine",   is_flag=True, help="Skip the EM-ICP annealing stage.")
+@click.option("--no-sym",    is_flag=True, help="Skip the doubly-stochastic refinement.")
+@_verbose_option
+def sym_plane(input_path, output_path, save_plane, init, no_coarse, no_fine, no_sym, quiet):
+    """Find the best bilateral symmetry plane of a 3-D surface."""
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-sym-plane")
+
+    from pyclarcs.io import load_surface, save_plane_vtk
     from pyclarcs.principal_axes import best_principal_axis_plane
     from pyclarcs.coarse import coarse_symmetry
     from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
     from pyclarcs.symmetry import SymmetryPlane
 
-    # ------------------------------------------------------------------
-    # Load surface
-    # ------------------------------------------------------------------
     if verbose:
-        print(f"Loading surface: {args.input}")
-    points, polygons = load_surface(args.input)
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons = load_surface(input_path)
     if verbose:
-        print(f"  {len(points)} points, {len(polygons)} faces")
+        click.echo(f"  {len(points)} points, {len(polygons)} faces")
 
     bounds = (
         float(points[:, 0].min()), float(points[:, 0].max()),
@@ -131,104 +82,225 @@ def _run_sym_plane(args: argparse.Namespace) -> int:
         float(points[:, 2].min()), float(points[:, 2].max()),
     )
 
-    # ------------------------------------------------------------------
-    # Initialisation
-    # ------------------------------------------------------------------
-    if args.init == "auto":
+    if init == "auto":
         if verbose:
-            print("Computing principal-axis initialisation…")
+            click.echo("Computing principal-axis initialisation…")
         plane = best_principal_axis_plane(points)
         if verbose:
-            print(f"  Initial plane: {plane}")
+            click.echo(f"  Initial plane: {plane}")
     else:
         if verbose:
-            print(f"Loading initial plane from: {args.init}")
-        plane = SymmetryPlane.load(args.init)
+            click.echo(f"Loading initial plane from: {init}")
+        plane = SymmetryPlane.load(init)
         if verbose:
-            print(f"  Loaded plane: {plane}")
+            click.echo(f"  Loaded plane: {plane}")
 
-    # ------------------------------------------------------------------
-    # Coarse optimisation (ICP + trimmed estimator)
-    # ------------------------------------------------------------------
-    if not args.no_coarse:
+    if not no_coarse:
         if verbose:
-            print("Coarse optimisation (ICP)…")
+            click.echo("Coarse optimisation (ICP)…")
         plane = coarse_symmetry(points, plane, verbose=verbose)
         if verbose:
-            print(f"  Coarse plane: {plane}")
+            click.echo(f"  Coarse plane: {plane}")
 
-    # ------------------------------------------------------------------
-    # Fine optimisation (EM-ICP with annealing)
-    # ------------------------------------------------------------------
-    if not args.no_fine:
+    if not no_fine:
         if verbose:
-            print("Fine optimisation (EM-ICP)…")
+            click.echo("Fine optimisation (EM-ICP)…")
         plane = em_icp_sym(points, plane, verbose=verbose)
         if verbose:
-            print(f"  Fine plane: {plane}")
+            click.echo(f"  Fine plane: {plane}")
 
-    # ------------------------------------------------------------------
-    # Final refinement (doubly-stochastic EM-ICP)
-    # ------------------------------------------------------------------
-    if not args.no_sym:
+    if not no_sym:
         if verbose:
-            print("Final refinement (EM-ICP symmetric correspondences)…")
+            click.echo("Final refinement (EM-ICP symmetric correspondences)…")
         plane = em_icp_sym_corres(points, plane, verbose=verbose)
         if verbose:
-            print(f"  Final plane: {plane}")
+            click.echo(f"  Final plane: {plane}")
 
-    # ------------------------------------------------------------------
-    # Output: symmetry plane patch (VTK rectangular patch)
-    # ------------------------------------------------------------------
     if verbose:
-        print(f"Saving symmetry plane patch: {output_path}")
-    save_plane_vtk(str(output_path), plane, bounds)
+        click.echo(f"Saving symmetry plane patch: {output_path}")
+    save_plane_vtk(output_path, plane, bounds)
 
-    # ------------------------------------------------------------------
-    # Output: plane parameters (optional)
-    # ------------------------------------------------------------------
-    if args.save_plane:
-        pl_path = output_path.with_suffix(".pl")
+    if save_plane:
+        pl_path = str(Path(output_path).with_suffix(".pl"))
         if verbose:
-            print(f"Saving symmetry plane parameters: {pl_path}")
-        plane.save(str(pl_path))
+            click.echo(f"Saving plane parameters: {pl_path}")
+        plane.save(pl_path)
 
     if verbose:
-        print("Done.")
-    return 0
+        click.echo("Done.")
 
 
 # ---------------------------------------------------------------------------
-# Top-level clarcs command
+# centerofmass
 # ---------------------------------------------------------------------------
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="clarcs",
-        description="CLARCS — tools for 3-D surface analysis.",
-        usage=(
-            "clarcs <command> [options]\n\n"
-            "Commands:\n"
-            "  sym-plane   Automatic symmetry plane estimation for a 3-D surface\n\n"
-            "Run  clarcs <command> --help  for command-specific options."
-        ),
-    )
-    subparsers = p.add_subparsers(dest="subcommand", metavar="COMMAND")
-    subparsers.required = True
-    _build_sym_plane_parser(subparsers)
-    return p
+@cli.command("centerofmass")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--target", required=True, type=click.Path(exists=True), metavar="TARGET",
+              help="Reference surface whose centre of mass to match.")
+@_verbose_option
+def centerofmass(input_path, output_path, target, quiet):
+    """Translate a surface to align its centre of mass with a reference."""
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-centerofmass")
+
+    from pyclarcs.io import load_surface, save_surface
+    from pyclarcs.alignment import align_center_of_mass
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons = load_surface(input_path)
+
+    if verbose:
+        click.echo(f"Loading target: {target}")
+    target_pts, _ = load_surface(target)
+
+    if verbose:
+        click.echo("Aligning centres of mass…")
+    result = align_center_of_mass(points, target_pts)
+
+    if verbose:
+        click.echo(f"Saving: {output_path}")
+    save_surface(output_path, result, polygons)
+
+    if verbose:
+        click.echo("Done.")
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+# ---------------------------------------------------------------------------
+# rescale
+# ---------------------------------------------------------------------------
 
-    if args.subcommand == "sym-plane":
-        return _run_sym_plane(args)
+@cli.command("rescale")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--target", required=True, type=click.Path(exists=True), metavar="TARGET",
+              help="Reference surface to match.")
+@_verbose_option
+def rescale(input_path, output_path, target, quiet):
+    """Translate and uniformly scale a surface to match a reference's size and position."""
+    verbose = not quiet
 
-    parser.print_help()
-    return 1
+    if output_path is None:
+        output_path = _default_output(input_path, "-rescale")
+
+    from pyclarcs.io import load_surface, save_surface
+    from pyclarcs.alignment import align_rescale
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons = load_surface(input_path)
+
+    if verbose:
+        click.echo(f"Loading target: {target}")
+    target_pts, _ = load_surface(target)
+
+    if verbose:
+        click.echo("Rescaling to match target centre of mass and dispersion…")
+    result = align_rescale(points, target_pts)
+
+    if verbose:
+        click.echo(f"Saving: {output_path}")
+    save_surface(output_path, result, polygons)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
+# recenter
+# ---------------------------------------------------------------------------
+
+@cli.command("recenter")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--plane", required=True, type=click.Path(exists=True), metavar="PLANE",
+              help="Symmetry plane file (.pl) from  clarcs sym-plane --save-plane.")
+@_verbose_option
+def recenter(input_path, output_path, plane, quiet):
+    """Rigidly align a surface so its symmetry plane coincides with x = 0."""
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-recentered")
+
+    from pyclarcs.io import load_surface, save_surface
+    from pyclarcs.symmetry import SymmetryPlane
+    from pyclarcs.alignment import align_to_symmetry_plane
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons = load_surface(input_path)
+
+    if verbose:
+        click.echo(f"Loading symmetry plane: {plane}")
+    sym_plane = SymmetryPlane.load(plane)
+    if verbose:
+        click.echo(f"  {sym_plane}")
+        click.echo("Aligning to canonical symmetry plane (n=[1,0,0], d=0)…")
+
+    result = align_to_symmetry_plane(points, sym_plane)
+
+    if verbose:
+        click.echo(f"Saving: {output_path}")
+    save_surface(output_path, result, polygons)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
+# orient
+# ---------------------------------------------------------------------------
+
+@cli.command("orient")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--axes", nargs=3, type=int, default=(0, 1, 2), metavar="X Y Z",
+              show_default=True,
+              help="Destination column indices for the current x, y, z axes.")
+@_verbose_option
+def orient(input_path, output_path, axes, quiet):
+    """Permute the coordinate axes of a surface.
+
+    Example: --axes 2 1 0 swaps x and z.
+    """
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-oriented")
+
+    from pyclarcs.io import load_surface, save_surface
+    from pyclarcs.alignment import reorient_axes
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons = load_surface(input_path)
+
+    x_to, y_to, z_to = axes
+    if verbose:
+        click.echo(f"Permuting axes: x→{x_to}, y→{y_to}, z→{z_to}")
+
+    result = reorient_axes(points, x_to, y_to, z_to)
+
+    if verbose:
+        click.echo(f"Saving: {output_path}")
+    save_surface(output_path, result, polygons)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    cli()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
