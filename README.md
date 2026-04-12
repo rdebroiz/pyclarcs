@@ -31,22 +31,24 @@ The algorithm finds the plane that best "superimposes the left and right parts"
 of an approximately bilateral surface.  It is formulated as a MAP problem and
 solved with an EM algorithm:
 
-```
-δ²(X¹, X²) = min_{A, T} [  Σ_{i,j} A_{i,j} ‖x_i − T(x_j)‖²
-                           + 2σ² Σ_{i,j} A_{i,j} log A_{i,j}  ]
-```
+$$
+\delta^2(X^1, X^2) = \min_{A,\, T} \left[
+  \sum_{i,j} A_{ij} \| x_i - T(x_j) \|^2
+  + 2\sigma^2 \sum_{i,j} A_{ij} \log A_{ij}
+\right]
+$$
 
-with `X¹ = X² = X` (same surface), `T` a reflection, and `A` a fuzzy
+with $X^1 = X^2 = X$ (same surface), $T$ a reflection, and $A$ a fuzzy
 correspondence matrix.
 
 The implementation runs four successive stages:
 
 | Stage | Module |
 |---|---|
-| **Initialisation** — principal axes of inertia tensor | `_principal_axes.py` |
-| **Coarse** — ICP with trimmed estimator, multi-resolution | `_coarse.py` |
-| **Fine** — EM-ICP with simulated annealing (σ: 5 → 0.5) | `_fine.py` |
-| **Refinement** — doubly-stochastic EM-ICP at σ = 0.25 | `_fine.py` |
+| **Initialisation** — principal axes of inertia tensor | `principal_axes.py` |
+| **Coarse** — ICP with trimmed estimator, multi-resolution | `coarse.py` |
+| **Fine** — EM-ICP with simulated annealing ($\sigma: 5 \to 0.5$) | `fine.py` |
+| **Refinement** — doubly-stochastic EM-ICP at $\sigma = 0.25$ | `fine.py` |
 
 ---
 
@@ -187,13 +189,13 @@ clarcs rescale INPUT [OUTPUT] --target TARGET
 | `OUTPUT` | Output file. Defaults to `<INPUT_STEM>-rescale<EXT>` |
 | `--target TARGET` | Reference surface (required) |
 
-The scale factor is the ratio of mean distances to the centroid (dispersion).
+The scale factor is $s = \bar{d}_\text{target} / \bar{d}_\text{source}$, where $\bar{d}$ is the mean Euclidean distance from each point to the centroid (dispersion).
 
 ---
 
 ### `clarcs recenter` — symmetry-plane recentering
 
-Rigidly align a surface so its symmetry plane coincides with the canonical plane `n=[1,0,0], d=0` (the YZ plane at x = 0).
+Rigidly align a surface so its symmetry plane coincides with the canonical plane $n = [1, 0, 0],\ d = 0$ (the YZ plane at $x = 0$).
 
 ```bash
 clarcs recenter INPUT [OUTPUT] [--plane PLANE.pl] [--save-plane]
@@ -285,8 +287,8 @@ p  83.2000  1.0200  -0.3700
 ```
 
 - `n` — unit normal vector of the plane
-- `p` — a point lying on the plane (`p = n × d`)
-- offset `d` is recovered as `d = n · p`
+- `p` — a point lying on the plane ($p = n \cdot d$)
+- offset $d$ is recovered as $d = n \cdot p$
 
 ---
 
