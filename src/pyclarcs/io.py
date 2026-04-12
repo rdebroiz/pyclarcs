@@ -39,6 +39,22 @@ from pyclarcs.symmetry import SymmetryPlane
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _compute_normals(poly: vtk.vtkPolyData) -> vtk.vtkPolyData:
+    """Compute consistent per-vertex normals via vtkPolyDataNormals.
+
+    ``SplittingOff()`` prevents the filter from inserting duplicate vertices
+    at sharp edges, so the point count and index ordering are preserved.
+    """
+    nf = vtk.vtkPolyDataNormals()
+    nf.SetInputData(poly)
+    nf.SetComputePointNormals(True)
+    nf.SetComputeCellNormals(False)
+    nf.SetAutoOrientNormals(True)
+    nf.SetConsistency(True)
+    nf.SplittingOff()
+    nf.Update()
+    return nf.GetOutput()
+
 def _reader_for(path: str) -> vtk.vtkAlgorithm:
     ext = Path(path).suffix.lower()
     readers: dict[str, type] = {
@@ -168,6 +184,39 @@ def load_surface(path: str) -> tuple[np.ndarray, list[list[int]]]:
     return _polydata_to_arrays(poly)
 
 
+def load_surface_with_normals(
+    path: str,
+) -> tuple[np.ndarray, list[list[int]], np.ndarray]:
+    """Read a surface and compute per-vertex normals via VTK.
+
+    Normals are computed by ``vtkPolyDataNormals`` with consistent outward
+    orientation.  ``SplittingOff()`` ensures the point count and index order
+    match those returned by ``load_surface`` on the same file.
+
+    Parameters
+    ----------
+    path : str
+        Path to the surface file (.vtk, .vtp, .vtu, .ply, .stl, .obj).
+
+    Returns
+    -------
+    points : ndarray (N, 3), float64
+        Vertex coordinates.
+    polygons : list of face index lists
+    normals : ndarray (N, 3), float64
+        Unit outward normals at each vertex.
+    """
+    reader = _reader_for(path)
+    poly = _polydata_from_reader(reader)
+    poly_n = _compute_normals(poly)
+    points, polygons = _polydata_to_arrays(poly_n)
+    vtk_n = poly_n.GetPointData().GetNormals()
+    if vtk_n is None:
+        raise ValueError(f"VTK could not compute normals for '{path}'.")
+    normals = vtk_to_numpy(vtk_n).astype(float)
+    return points, polygons, normals
+
+
 # ---------------------------------------------------------------------------
 # Public API — saving
 # ---------------------------------------------------------------------------
@@ -203,6 +252,46 @@ def save_surface(
         vtk_scalars = numpy_to_vtk(scalars.astype(np.float32), deep=True)
         vtk_scalars.SetName(scalars_name)
         poly.GetPointData().SetScalars(vtk_scalars)
+
+    writer = _writer_for(path, poly)
+    writer.Write()
+
+
+# ---------------------------------------------------------------------------
+# Public API — deformation field
+# ---------------------------------------------------------------------------
+
+def save_deformation_vtk(
+    path: str,
+    points: np.ndarray,
+    polygons: list[list[int]] | None,
+    deformation: np.ndarray,
+    deformation_name: str = "deformation",
+) -> None:
+    """Save a surface with a per-vertex deformation field as VTK VECTORS.
+
+    The output is the *original* (undeformed) surface with the deformation
+    vectors stored as VECTORS point data.  In ParaView / VTK you can then
+    use the *Warp By Vector* or *Glyph* filter to visualise the field.
+
+    Parameters
+    ----------
+    path : str
+        Output path (.vtk or .vtp recommended — other formats may ignore
+        point-data vectors).
+    points : ndarray (N, 3)
+        Vertex coordinates of the **original** (moving) surface.
+    polygons : list of face index lists or None
+    deformation : ndarray (N, 3)
+        Per-vertex deformation vectors  d_i  (``warped = points + deformation``).
+    deformation_name : str
+        Name of the VECTORS array in the VTK file.
+    """
+    poly = _arrays_to_polydata(points, polygons or [])
+
+    vtk_vecs = numpy_to_vtk(deformation.astype(np.float32), deep=True)
+    vtk_vecs.SetName(deformation_name)
+    poly.GetPointData().SetVectors(vtk_vecs)
 
     writer = _writer_for(path, poly)
     writer.Write()

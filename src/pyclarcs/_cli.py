@@ -6,6 +6,7 @@ Command-line interface for clarcs (Click-based).
     clarcs rescale      INPUT [OUTPUT] --target TARGET
     clarcs recenter     INPUT [OUTPUT] --plane  PLANE.pl
     clarcs orient       INPUT [OUTPUT] --axes   X Y Z
+    clarcs register     INPUT REF     [OUTPUT] [--deformation FIELD] [options]
 """
 
 from __future__ import annotations
@@ -321,6 +322,98 @@ def orient(input_path, output_path, axes, quiet):
     if verbose:
         click.echo(f"Saving: {output_path}")
     save_surface(output_path, result, polygons)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
+# register
+# ---------------------------------------------------------------------------
+
+@cli.command("register")
+@click.argument("input_path", metavar="INPUT", type=click.Path(exists=True))
+@click.argument("ref_path",   metavar="REF",   type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--deformation", default=None, metavar="FIELD",
+              help="Also save the deformation field to this VTK file.")
+@click.option("--sigma",       default=3.0,   show_default=True, type=float,
+              help="Initial bandwidth of the correspondence kernel.")
+@click.option("--beta",        default=100.0, show_default=True, type=float,
+              help="Regularisation weight (higher = smoother).")
+@click.option("--dist-cutoff", default=15.0,  show_default=True, type=float,
+              help="Maximum search radius for correspondences.")
+@click.option("--max-iter",    default=80,    show_default=True, type=int,
+              help="Number of outer EM iterations.")
+@click.option("--icm-iter",    default=120,   show_default=True, type=int,
+              help="Number of Jacobi ICM steps per outer iteration.")
+@click.option("--period-sigma", default=40,   show_default=True, type=int,
+              help="Halve sigma every this many iterations.")
+@_verbose_option
+def register(input_path, ref_path, output_path, deformation,
+             sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
+             quiet):
+    """Non-rigidly register INPUT onto REF using EM-ICP.
+
+    Outputs the warped INPUT surface.  Optionally saves the per-vertex
+    deformation field as a VTK file with VECTORS point data.
+    """
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-registered")
+
+    from pyclarcs.io import (
+        load_surface_with_normals, save_surface, save_deformation_vtk,
+    )
+    from pyclarcs.mesh import adjacency_csr
+    from pyclarcs.nonrigid import nonrigid_icp, apply_deformation
+
+    if verbose:
+        click.echo(f"Loading moving surface: {input_path}")
+    mov_pts, mov_poly, mov_normals = load_surface_with_normals(input_path)
+    if verbose:
+        click.echo(f"  {len(mov_pts)} points, {len(mov_poly)} faces")
+
+    if verbose:
+        click.echo(f"Loading reference surface: {ref_path}")
+    ref_pts, _, ref_normals = load_surface_with_normals(ref_path)
+    if verbose:
+        click.echo(f"  {len(ref_pts)} points")
+
+    if verbose:
+        click.echo("Building mesh adjacency…")
+    adj = adjacency_csr(mov_poly, len(mov_pts))
+
+    if verbose:
+        click.echo(
+            f"Non-rigid EM-ICP  "
+            f"σ={sigma}  β={beta}  r={dist_cutoff}  "
+            f"iter={max_iter}×{icm_iter}"
+        )
+    def_field = nonrigid_icp(
+        mov_pts, mov_normals,
+        ref_pts, ref_normals,
+        adj,
+        sigma=sigma,
+        beta=beta,
+        dist_cutoff=dist_cutoff,
+        max_iter=max_iter,
+        icm_iter=icm_iter,
+        period_sigma=period_sigma,
+        verbose=verbose,
+    )
+
+    warped = apply_deformation(mov_pts, def_field)
+
+    if verbose:
+        click.echo(f"Saving warped surface: {output_path}")
+    save_surface(output_path, warped, mov_poly)
+
+    if deformation is not None:
+        if verbose:
+            click.echo(f"Saving deformation field: {deformation}")
+        save_deformation_vtk(deformation, mov_pts, mov_poly, def_field)
 
     if verbose:
         click.echo("Done.")
