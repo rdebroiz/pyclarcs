@@ -19,13 +19,34 @@ clarcs nlregister INPUT REF [OUTPUT] [--deformation FIELD] [options]
 | `REF` | Reference surface |
 | `OUTPUT` | Warped output surface. Defaults to `<INPUT_STEM>-nlregistered<EXT>` |
 | `--deformation FIELD` | Save the per-vertex deformation field to this VTK file (VECTORS point data) |
-| `--sigma F` | Initial bandwidth of the correspondence kernel (default: `3.0`) |
+| `--sigma F` | Initial bandwidth of the correspondence kernel — **auto-estimated if omitted** |
 | `--beta F` | Regularisation weight — higher = smoother field (default: `100.0`) |
-| `--dist-cutoff F` | Search radius for candidate correspondences (default: `15.0`) |
+| `--dist-cutoff F` | Search radius for candidate correspondences — **auto-estimated if omitted** |
 | `--max-iter N` | Number of outer EM iterations (default: `80`) |
 | `--icm-iter N` | Jacobi ICM steps per outer iteration (default: `120`) |
-| `--period-sigma N` | Halve sigma every N iterations (default: `40`) |
+| `--period-sigma N` | Halve sigma every N iterations — **auto-estimated if omitted** |
+| `--sigma-min F` | Annealing floor for sigma (default: `0.1`) |
+| `--e-chunk N` | Vertices per KDTree batch in the E-step (default: `2000`). Reduce to lower peak RAM. |
 | `-q / --quiet` | Suppress all output |
+
+### Auto-estimation of sigma, dist_cutoff and period_sigma
+
+When `--sigma`, `--dist-cutoff` or `--period-sigma` are omitted, the command
+subsamples 2 000 vertices from the moving surface, queries their nearest
+neighbour on the reference, and derives the three parameters from the resulting
+distance distribution:
+
+| Parameter | Formula | Rationale |
+|---|---|---|
+| `sigma` | $\tilde{d}_{50}$ — median NN distance | At $\sigma$ = median gap, roughly half the point pairs have weight $\geq e^{-1} \approx 0.37$: broad but informative correspondences to start with. |
+| `dist_cutoff` | $\max\!\bigl(\tilde{d}_{99} \times 1.5,\; \sigma \times 3\bigr)$ | The 99th-percentile covers near-outlier points; ×1.5 adds a safety margin. The $3\sigma$ floor ensures the search radius is always meaningful relative to the kernel width. |
+| `period_sigma` | $\bigl\lfloor \text{max\_iter} / \lceil \log_2(\sigma / \sigma_{\min}) \rceil \bigr\rfloor$ | Computes the number of halvings needed to bring $\sigma$ from its initial value down to $\sigma_{\min}$, then spreads them evenly across the outer iterations. |
+
+where $\tilde{d}_p$ denotes the $p$-th percentile of the nearest-neighbour
+distances measured from the subsample to the reference.
+
+The auto-estimated values are printed at the start of the run (unless `--quiet`)
+so they can be reused or overridden in subsequent calls.
 
 ---
 
@@ -122,10 +143,16 @@ The deformation field VTK file can be visualised in ParaView with the
 ```python
 from pyclarcs.io import load_surface_with_normals, save_surface, save_deformation_vtk
 from pyclarcs.mesh import adjacency_csr
-from pyclarcs.nonrigid import nonrigid_icp, apply_deformation
+from pyclarcs.nonrigid import nonrigid_icp, apply_deformation, estimate_registration_params
 
 mov_pts, mov_poly, mov_normals = load_surface_with_normals("target.vtk")
 ref_pts, _,        ref_normals = load_surface_with_normals("reference.vtk")
+
+# Auto-estimate parameters from the surfaces (optional — pass explicit values
+# to override any of the three).
+params = estimate_registration_params(mov_pts, ref_pts)
+print(params)
+# → {"sigma": 3.6, "dist_cutoff": 20.4, "period_sigma": 13}
 
 adj = adjacency_csr(mov_poly, len(mov_pts))
 
@@ -133,8 +160,7 @@ def_field = nonrigid_icp(
     mov_pts, mov_normals,
     ref_pts, ref_normals,
     adj,
-    sigma=3.0, beta=100.0, dist_cutoff=15.0,
-    max_iter=80, icm_iter=120,
+    **params,          # unpack auto-estimated params; add beta/max_iter/... as needed
 )
 
 warped = apply_deformation(mov_pts, def_field)

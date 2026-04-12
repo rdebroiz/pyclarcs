@@ -123,11 +123,23 @@ plane = em_icp_sym_corres(points, plane)
 plane.save("plane.pl")
 
 # --- Non-rigid registration ---
-mov_pts, mov_poly, mov_n = load_surface_with_normals("target-rescaled.vtk")
+from pyclarcs.nonrigid import nonrigid_icp, apply_deformation, estimate_registration_params
+
+mov_pts, mov_poly, mov_n = load_surface_with_normals("target-normalized.vtk")
 ref_pts, _,        ref_n = load_surface_with_normals("ref.vtk")
 adj = adjacency_csr(mov_poly, len(mov_pts))
 
-def_field = nonrigid_icp(mov_pts, mov_n, ref_pts, ref_n, adj)
+# Auto-estimate sigma, dist_cutoff and period_sigma from the surfaces.
+# These three parameters are derived from the nearest-neighbour distance
+# distribution between a 2 000-point subsample of the moving surface and
+# the reference:
+#   sigma        = 50th percentile of NN distances (median gap)
+#   dist_cutoff  = max(99th percentile × 1.5,  sigma × 3)
+#   period_sigma = max_iter // ceil(log2(sigma / sigma_min))
+# Pass explicit values to override any of them.
+params = estimate_registration_params(mov_pts, ref_pts)
+
+def_field = nonrigid_icp(mov_pts, mov_n, ref_pts, ref_n, adj, **params)
 warped    = apply_deformation(mov_pts, def_field)
 ```
 
