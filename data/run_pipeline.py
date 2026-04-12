@@ -7,9 +7,8 @@ generate_samples.py.
 
 Pipeline (per pair)
 -------------------
-  1. recenter    — align the target's symmetry plane to x = 0
-  2. normalize   — match the recentered target's size and centre-of-mass to ref
-  3. nlregister  — non-rigid EM-ICP to warp the normalized target onto ref
+  1. normalize   — match the target's size and centre-of-mass to ref
+  2. nlregister  — non-rigid EM-ICP to warp the normalized target onto ref
 
 All intermediate and final surfaces are written to OUTPUT_DIR.
 """
@@ -46,39 +45,15 @@ _PAIRS = {
 # Pipeline steps
 # ---------------------------------------------------------------------------
 
-def _step_recenter(target_path: Path, out_dir: Path, verbose: bool) -> Path:
-    """Step 1 — estimate symmetry plane and align target to x = 0."""
-    from pyclarcs._cli import cli
-    from click.testing import CliRunner
-
-    out_path = out_dir / (target_path.stem + "-recentered.vtk")
-    args = ["recenter", str(target_path), str(out_path), "--save-plane"]
-    if not verbose:
-        args.append("-q")
-
-    t0 = time.perf_counter()
-    result = CliRunner().invoke(cli, args)
-    elapsed = time.perf_counter() - t0
-
-    if result.exit_code != 0:
-        click.echo(f"  [ERROR] recenter failed:\n{result.output}", err=True)
-        raise SystemExit(1)
-
-    if verbose:
-        click.echo(result.output, nl=False)
-    click.echo(f"  recenter   → {out_path.name}  ({elapsed:.1f} s)")
-    return out_path
-
-
 def _step_normalize(
-    recentered_path: Path, ref_path: Path, out_dir: Path, verbose: bool
+    target_path: Path, ref_path: Path, out_dir: Path, verbose: bool
 ) -> Path:
-    """Step 2 — match size and centre-of-mass to reference."""
+    """Step 1 — match size and centre-of-mass to reference."""
     from pyclarcs._cli import cli
     from click.testing import CliRunner
 
-    out_path = out_dir / (recentered_path.stem + "-normalized.vtk")
-    args = ["normalize", str(recentered_path), str(out_path), "--target", str(ref_path)]
+    out_path = out_dir / (target_path.stem + "-normalized.vtk")
+    args = ["normalize", str(target_path), str(out_path), "--target", str(ref_path)]
     if not verbose:
         args.append("-q")
 
@@ -94,6 +69,9 @@ def _step_normalize(
         click.echo(result.output, nl=False)
     click.echo(f"  normalize  → {out_path.name}  ({elapsed:.1f} s)")
     return out_path
+
+
+
 
 
 def _step_nlregister(
@@ -184,7 +162,7 @@ def _print_summary(ref_path: Path, target_path: Path, registered_path: Path) -> 
               help="Initial bandwidth of the correspondence kernel.")
 @click.option("--beta",         default=100.0, show_default=True, type=float,
               help="Regularisation weight (higher = smoother).")
-@click.option("--dist-cutoff",  default=15.0,  show_default=True, type=float,
+@click.option("--dist-cutoff",  default=25.0,  show_default=True, type=float,
               help="Maximum search radius for correspondences.")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
@@ -198,7 +176,7 @@ def main(
     sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
     quiet,
 ):
-    """Run the clarcs pipeline (recenter → normalize → nlregister) on test pairs."""
+    """Run the clarcs pipeline (normalize → nlregister) on test pairs."""
     verbose = not quiet
     selected = list(pairs) if pairs else list(_PAIRS)
     output_dir = Path(output_dir).resolve()
@@ -236,8 +214,7 @@ def main(
         click.echo(f"  out  : {output_dir}/")
         click.echo(sep)
 
-        recentered = _step_recenter(tgt_path, output_dir, verbose)
-        normalized = _step_normalize(recentered, ref_path, output_dir, verbose)
+        normalized = _step_normalize(tgt_path, ref_path, output_dir, verbose)
 
         if not no_nlregister:
             registered = _step_nlregister(

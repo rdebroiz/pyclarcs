@@ -207,8 +207,13 @@ def nonrigid_icp(
         row_sums = np.asarray(W.sum(axis=1), dtype=float).ravel()  # (N,)
         col_sums = np.asarray(W.sum(axis=0), dtype=float).ravel()  # (M,)
 
-        row_inv = np.where(row_sums > 0.0, 1.0 / row_sums, 0.0)
-        col_inv = np.where(col_sums > 0.0, 1.0 / col_sums, 0.0)
+        row_inv = np.zeros_like(row_sums)
+        nz_r = row_sums > 0.0
+        row_inv[nz_r] = 1.0 / row_sums[nz_r]
+
+        col_inv = np.zeros_like(col_sums)
+        nz_c = col_sums > 0.0
+        col_inv[nz_c] = 1.0 / col_sums[nz_c]
 
         # W_norm1[i,j] = w_ij / sC_j   →  W @ diag(col_inv)
         # W_norm2[i,j] = w_ij / sR_i   →  diag(row_inv) @ W

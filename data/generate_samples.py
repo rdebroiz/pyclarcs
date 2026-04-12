@@ -35,10 +35,10 @@ Surfaces produced
    surface after applying:
      (a) A small affine transform: translation (10, 7, −5) mm,
          rotation 12° around axis (0.3, 0.8, 0.5), uniform scale 1.03.
-     (b) A smooth non-rigid deformation: 8 Gaussian bumps of amplitude
-         3 mm spread across the surface.
+     (b) A smooth non-rigid deformation: 16 Gaussian bumps of amplitude
+         15 mm spread across the surface.
    Intended to exercise the full pipeline:
-       clarcs recenter  →  clarcs normalize  →  clarcs nlregister
+       clarcs normalize  →  clarcs nlregister
 """
 
 from __future__ import annotations
@@ -364,15 +364,14 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
            rotation     12° around axis (0.3, 0.8, 0.5)
            scale        1.03  (3 % larger)
       2. Smooth non-rigid deformation:
-           8 Gaussian bumps, amplitude 3 mm,
+           16 Gaussian bumps, amplitude 15 mm,
            influence radius 15 % of bounding-box diagonal.
 
     Output files (same polygon connectivity as the reference):
         <stem>_target.vtk
 
     Intended pipeline:
-        clarcs recenter    <target>      --plane <ref_plane.pl>
-        clarcs normalize   <recentered>  --target <ref>
+        clarcs normalize   <target>      --target <ref>
         clarcs nlregister  <normalized>  <ref>
     """
     refs = [
@@ -394,7 +393,7 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
         perturbed = _affine_perturb(pts)
 
         # Step 2 — smooth non-rigid deformation applied to the already-perturbed cloud
-        field = _smooth_deformation(perturbed)
+        field = _smooth_deformation(perturbed, amplitude=15.0, n_bumps=16)
         target_pts = perturbed + field
 
         stem = ref_path.stem
@@ -404,7 +403,7 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
             click.echo(
                 f"  {ref_fname}  →  {out.name}"
                 f"  ({len(target_pts):,} pts)"
-                f"  [t=(10,7,-5) mm | R=12° | s=1.03 | {8} bumps ×3 mm]"
+                f"  [t=(10,7,-5) mm | R=12° | s=1.03 | 16 bumps ×15 mm]"
             )
 
 

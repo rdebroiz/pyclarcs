@@ -180,18 +180,22 @@ def em_icp_sym(
                 f"  d={plane.d:.4f}  n={plane.n}"
             )
 
-        if sigma > sigma_final:
-            converged_here = (
-                abs(plane.d - d_prev) < convergence_tol
-                and abs(plane.n[0] - n_prev[0]) < convergence_tol
-                and abs(plane.n[1] - n_prev[1]) < convergence_tol
-                and abs(plane.n[2] - n_prev[2]) < convergence_tol
-            )
-            if converged_here:
+        converged_here = (
+            abs(plane.d - d_prev) < convergence_tol
+            and abs(plane.n[0] - n_prev[0]) < convergence_tol
+            and abs(plane.n[1] - n_prev[1]) < convergence_tol
+            and abs(plane.n[2] - n_prev[2]) < convergence_tol
+        )
+        if converged_here:
+            if sigma > sigma_final:
                 sigma = max(sigma / K, sigma_final)
                 need_resample = True
                 if verbose:
                     print(f"    σ decreased → {sigma:.4f}")
+            else:
+                if verbose:
+                    print(f"  [EM_ICP] converged at iter {it}")
+                break
 
         if it == 0:
             K = 1.03
@@ -222,6 +226,7 @@ def em_icp_sym_corres(
     sigma: float = 0.25,
     nu_max: float = 1.5,
     max_iter: int = 100,
+    convergence_tol: float = 1e-5,
     verbose: bool = False,
 ) -> SymmetryPlane:
     """Final symmetry refinement with doubly-stochastic EM-ICP."""
@@ -231,6 +236,9 @@ def em_icp_sym_corres(
     counts = np.ones(len(points), dtype=np.float64)
 
     for it in range(max_iter):
+        d_prev = plane.d
+        n_prev = plane.n.copy()
+
         flat_nbrs, offsets, flat_weights, _ = _e_step(
             points, tree, points, plane, sigma_sq, nu_max, doubly_stochastic=True
         )
@@ -238,6 +246,14 @@ def em_icp_sym_corres(
 
         if verbose:
             print(f"  [EM_corres] iter {it:4d}  d={plane.d:.4f}  n={plane.n}")
+
+        if (
+            abs(plane.d - d_prev) < convergence_tol
+            and np.max(np.abs(plane.n - n_prev)) < convergence_tol
+        ):
+            if verbose:
+                print(f"  [EM_corres] converged at iter {it}")
+            break
 
     if verbose:
         print(f"  [EM_corres] final plane: {plane}")
