@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import click
@@ -45,12 +46,33 @@ _PAIRS = {
 # Pipeline steps
 # ---------------------------------------------------------------------------
 
+def _invoke(cli, args: list[str]) -> "click.testing.Result":
+    """Invoke a CLI command and always return the result (never raise)."""
+    from click.testing import CliRunner
+    return CliRunner().invoke(cli, args, catch_exceptions=True)
+
+
+def _check(result, step: str, out_path: Path) -> None:
+    """Raise SystemExit with full diagnostics if the step failed."""
+    if result.exit_code == 0:
+        return
+    click.echo(f"  [ERROR] {step} failed (exit {result.exit_code})", err=True)
+    if result.output:
+        click.echo(result.output, err=True, nl=False)
+    if result.exception is not None:
+        lines = traceback.format_exception(
+            type(result.exception), result.exception,
+            result.exception.__traceback__,
+        )
+        click.echo("".join(lines), err=True, nl=False)
+    raise SystemExit(1)
+
+
 def _step_normalize(
     target_path: Path, ref_path: Path, out_dir: Path, verbose: bool
 ) -> Path:
     """Step 1 — match size and centre-of-mass to reference."""
     from pyclarcs._cli import cli
-    from click.testing import CliRunner
 
     out_path = out_dir / (target_path.stem + "-normalized.vtk")
     args = ["normalize", str(target_path), str(out_path), "--target", str(ref_path)]
@@ -58,19 +80,14 @@ def _step_normalize(
         args.append("-q")
 
     t0 = time.perf_counter()
-    result = CliRunner().invoke(cli, args)
+    result = _invoke(cli, args)
     elapsed = time.perf_counter() - t0
 
-    if result.exit_code != 0:
-        click.echo(f"  [ERROR] normalize failed:\n{result.output}", err=True)
-        raise SystemExit(1)
-
+    _check(result, "normalize", out_path)
     if verbose:
         click.echo(result.output, nl=False)
     click.echo(f"  normalize  → {out_path.name}  ({elapsed:.1f} s)")
     return out_path
-
-
 
 
 
@@ -81,9 +98,8 @@ def _step_nlregister(
     reg_kwargs: dict,
     verbose: bool,
 ) -> Path:
-    """Step 3 — non-rigid EM-ICP registration."""
+    """Step 2 — non-rigid EM-ICP registration."""
     from pyclarcs._cli import cli
-    from click.testing import CliRunner
 
     out_path = out_dir / (normalized_path.stem + "-nlregistered.vtk")
     def_path = out_dir / (normalized_path.stem + "-deformation.vtk")
@@ -105,13 +121,10 @@ def _step_nlregister(
         args.append("-q")
 
     t0 = time.perf_counter()
-    result = CliRunner().invoke(cli, args)
+    result = _invoke(cli, args)
     elapsed = time.perf_counter() - t0
 
-    if result.exit_code != 0:
-        click.echo(f"  [ERROR] nlregister failed:\n{result.output}", err=True)
-        raise SystemExit(1)
-
+    _check(result, "nlregister", out_path)
     if verbose:
         click.echo(result.output, nl=False)
     click.echo(f"  nlregister → {out_path.name}  ({elapsed:.1f} s)")

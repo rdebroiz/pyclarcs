@@ -257,14 +257,10 @@ def _load_ply(path: Path) -> tuple[np.ndarray, list[list[int]]]:
     return load_surface(str(path))
 
 
-def _decimate_vtk(
-    points: np.ndarray,
-    faces: list[list[int]],
-    target_n: int,
-) -> tuple[np.ndarray, list[list[int]]]:
-    """Decimate a mesh to approximately target_n vertices using VTK."""
+def _build_polydata(points: np.ndarray, faces: list[list[int]]):
+    """Build a vtkPolyData from numpy arrays."""
     import vtk
-    from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+    from vtk.util.numpy_support import numpy_to_vtk
 
     vtk_pts = vtk.vtkPoints()
     vtk_pts.SetData(numpy_to_vtk(points.astype("float32"), deep=True))
@@ -276,13 +272,13 @@ def _decimate_vtk(
     poly = vtk.vtkPolyData()
     poly.SetPoints(vtk_pts)
     poly.SetPolys(cells)
+    return poly
 
-    deci = vtk.vtkDecimatePro()
-    deci.SetInputData(poly)
-    deci.SetTargetReduction(1.0 - target_n / len(points))
-    deci.PreserveTopologyOn()
-    deci.Update()
-    out = deci.GetOutput()
+
+def _polydata_to_arrays(out) -> tuple[np.ndarray, list[list[int]]]:
+    """Extract (points, faces) from a vtkPolyData."""
+    import vtk
+    from vtk.util.numpy_support import vtk_to_numpy
 
     pts = vtk_to_numpy(out.GetPoints().GetData()).astype(float)
     new_faces: list[list[int]] = []
@@ -291,6 +287,30 @@ def _decimate_vtk(
     while out.GetPolys().GetNextCell(id_list):
         new_faces.append([id_list.GetId(i) for i in range(id_list.GetNumberOfIds())])
     return pts, new_faces
+
+
+def _decimate_vtk(
+    points: np.ndarray,
+    faces: list[list[int]],
+    target_n: int,
+) -> tuple[np.ndarray, list[list[int]]]:
+    """Decimate a mesh to approximately target_n vertices using VTK.
+
+    Uses vtkQuadricDecimation (error-quadrics) which reliably hits high
+    reduction ratios.  vtkDecimatePro with PreserveTopology caps out around
+    50 % reduction on complex meshes like brain surfaces.
+    """
+    import vtk
+
+    reduction = 1.0 - target_n / len(points)
+    poly = _build_polydata(points, faces)
+
+    deci = vtk.vtkQuadricDecimation()
+    deci.SetInputData(poly)
+    deci.SetTargetReduction(reduction)
+    deci.Update()
+
+    return _polydata_to_arrays(deci.GetOutput())
 
 
 # ---------------------------------------------------------------------------
