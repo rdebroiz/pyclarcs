@@ -39,22 +39,16 @@ Surfaces produced
          3 mm spread across the surface.
    Intended to exercise the full pipeline:
        clarcs recenter  →  clarcs normalize  →  clarcs nlregister
-
-Usage
------
-    python generate_samples.py             # generate all (downloads MNI on first run)
-    python generate_samples.py --no-mni    # skip MNI surfaces
-    python generate_samples.py --no-reg    # skip registration pairs
 """
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
 import urllib.request
 from pathlib import Path
 
+import click
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -74,11 +68,11 @@ _MNI_URL = (
     "https://s3.us-east-2.amazonaws.com/brainder/software/"
     "brain4blender/smallfiles/pial_Full_ply.tar.bz2"
 )
-_CACHE_DIR   = Path.home() / ".cache" / "pyclarcs"
-_ARCHIVE     = _CACHE_DIR / "pial_Full_ply.tar.bz2"
-_CACHE       = _CACHE_DIR / "pial_Full_ply"
-LH_PLY       = _CACHE / "lh.pial.ply"
-RH_PLY       = _CACHE / "rh.pial.ply"
+_CACHE_DIR = Path.home() / ".cache" / "pyclarcs"
+_ARCHIVE   = _CACHE_DIR / "pial_Full_ply.tar.bz2"
+_CACHE     = _CACHE_DIR / "pial_Full_ply"
+LH_PLY     = _CACHE / "lh.pial.ply"
+RH_PLY     = _CACHE / "rh.pial.ply"
 
 
 def _dl_progress(block_count: int, block_size: int, total: int) -> None:
@@ -86,8 +80,10 @@ def _dl_progress(block_count: int, block_size: int, total: int) -> None:
     if total > 0:
         pct = min(100, 100 * downloaded / total)
         bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
-        print(f"\r  [{bar}] {pct:5.1f}%  {downloaded/1e6:.1f}/{total/1e6:.1f} MB",
-              end="", flush=True)
+        click.echo(
+            f"\r  [{bar}] {pct:5.1f}%  {downloaded/1e6:.1f}/{total/1e6:.1f} MB",
+            nl=False,
+        )
 
 
 def download_mni_pial(verbose: bool = True) -> None:
@@ -98,24 +94,24 @@ def download_mni_pial(verbose: bool = True) -> None:
     """
     if LH_PLY.exists() and RH_PLY.exists():
         if verbose:
-            print(f"  Cache found: {_CACHE}")
+            click.echo(f"  Cache found: {_CACHE}")
         return
 
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     if not _ARCHIVE.exists():
         if verbose:
-            print("Downloading MNI pial surface from brainder.org…")
-            print(f"  {_MNI_URL}")
+            click.echo("Downloading MNI pial surface from brainder.org…")
+            click.echo(f"  {_MNI_URL}")
         urllib.request.urlretrieve(
             _MNI_URL, _ARCHIVE,
             reporthook=_dl_progress if verbose else None,
         )
         if verbose:
-            print()
+            click.echo("")
 
     if verbose:
-        print("Extracting archive…")
+        click.echo("Extracting archive…")
     result = subprocess.run(
         ["tar", "xjf", str(_ARCHIVE), "-C", str(_CACHE_DIR)],
         capture_output=True,
@@ -126,7 +122,7 @@ def download_mni_pial(verbose: bool = True) -> None:
             "Make sure 'tar' and 'bzip2' are installed."
         )
     if verbose:
-        print(f"  → {_CACHE}")
+        click.echo(f"  → {_CACHE}")
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +302,7 @@ def gen_mni_pial(out_dir: Path, verbose: bool = True) -> None:
     download_mni_pial(verbose=verbose)
 
     if verbose:
-        print("Loading LH + RH pial surfaces…")
+        click.echo("Loading LH + RH pial surfaces…")
     lh_pts, lh_faces = _load_ply(LH_PLY)
     rh_pts, rh_faces = _load_ply(RH_PLY)
 
@@ -319,15 +315,15 @@ def gen_mni_pial(out_dir: Path, verbose: bool = True) -> None:
     out = out_dir / "endocranium_mni_pial.vtk"
     save_surface(str(out), all_pts, all_faces)
     if verbose:
-        print(f"  → {out.name}  ({len(all_pts):,} pts, {len(all_faces):,} faces)")
+        click.echo(f"  → {out.name}  ({len(all_pts):,} pts, {len(all_faces):,} faces)")
 
     if verbose:
-        print("Decimating to ~10 000 points…")
+        click.echo("Decimating to ~10 000 points…")
     dec_pts, dec_faces = _decimate_vtk(all_pts, all_faces, target_n=10_000)
     out2 = out_dir / "endocranium_mni_pial_10k.vtk"
     save_surface(str(out2), dec_pts, dec_faces)
     if verbose:
-        print(f"  → {out2.name}  ({len(dec_pts):,} pts, {len(dec_faces):,} faces)")
+        click.echo(f"  → {out2.name}  ({len(dec_pts):,} pts, {len(dec_faces):,} faces)")
 
 
 def gen_synthetic(out_dir: Path, verbose: bool = True) -> None:
@@ -356,7 +352,7 @@ def gen_synthetic(out_dir: Path, verbose: bool = True) -> None:
         out = out_dir / fname
         save_surface(str(out), pts, faces)
         if verbose:
-            print(f"  → {out.name}  ({len(pts):,} pts)  [{desc}]")
+            click.echo(f"  → {out.name}  ({len(pts):,} pts)  [{desc}]")
 
 
 def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
@@ -389,7 +385,7 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
         ref_path = out_dir / ref_fname
         if not ref_path.exists():
             if verbose:
-                print(f"  SKIP {ref_fname} (not found)")
+                click.echo(f"  SKIP {ref_fname} (not found)")
             continue
 
         pts, faces = load_surface(str(ref_path))
@@ -405,7 +401,7 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
         out = out_dir / f"{stem}_target.vtk"
         save_surface(str(out), target_pts, faces)
         if verbose:
-            print(
+            click.echo(
                 f"  {ref_fname}  →  {out.name}"
                 f"  ({len(target_pts):,} pts)"
                 f"  [t=(10,7,-5) mm | R=12° | s=1.03 | {8} bumps ×3 mm]"
@@ -413,46 +409,40 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# CLI
 # ---------------------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--no-mni", action="store_true",
-                        help="Skip MNI pial surfaces (skips download).")
-    parser.add_argument("--no-reg", action="store_true",
-                        help="Skip registration test pairs (*_target.vtk).")
-    parser.add_argument("-q", "--quiet", action="store_true")
-    args = parser.parse_args(argv)
-    verbose = not args.quiet
-
+@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.option("--no-mni", is_flag=True, help="Skip MNI pial surfaces (skips download).")
+@click.option("--no-reg", is_flag=True, help="Skip registration test pairs (*_target.vtk).")
+@click.option("-q", "--quiet", is_flag=True, help="Suppress all output.")
+def main(no_mni, no_reg, quiet):
+    """Generate pyclarcs test surfaces (synthetic ellipsoids + MNI pial)."""
+    verbose = not quiet
     out_dir = Path(__file__).resolve().parent
     out_dir.mkdir(exist_ok=True)
 
     if verbose:
-        print("=== Generating pyclarcs test surfaces ===\n")
+        click.echo("=== Generating pyclarcs test surfaces ===\n")
 
-    if not args.no_mni:
+    if not no_mni:
         gen_mni_pial(out_dir, verbose=verbose)
     elif verbose:
-        print("Skipping MNI surfaces (--no-mni).")
+        click.echo("Skipping MNI surfaces (--no-mni).")
 
     if verbose:
-        print("\nGenerating synthetic surfaces…")
+        click.echo("\nGenerating synthetic surfaces…")
     gen_synthetic(out_dir, verbose=verbose)
 
-    if not args.no_reg:
+    if not no_reg:
         if verbose:
-            print("\nGenerating registration test pairs…")
+            click.echo("\nGenerating registration test pairs…")
         gen_registration_samples(out_dir, verbose=verbose)
     elif verbose:
-        print("Skipping registration pairs (--no-reg).")
+        click.echo("Skipping registration pairs (--no-reg).")
 
     if verbose:
-        print("\nDone.")
+        click.echo("\nDone.")
 
 
 if __name__ == "__main__":
