@@ -349,10 +349,12 @@ def normalize(input_path, output_path, target, quiet):
               help="Number of Jacobi ICM steps per outer iteration.")
 @click.option("--period-sigma", default=40,   show_default=True, type=int,
               help="Halve sigma every this many iterations.")
+@click.option("--e-chunk",     default=2000, show_default=True, type=int,
+              help="Vertices per KDTree batch in the E-step (lower = less RAM).")
 @_verbose_option
 def nlregister(input_path, ref_path, output_path, deformation,
                sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
-               quiet):
+               e_chunk, quiet):
     """Non-linearly register INPUT onto REF using EM-ICP.
 
     Outputs the warped INPUT surface.  Optionally saves the per-vertex
@@ -401,6 +403,7 @@ def nlregister(input_path, ref_path, output_path, deformation,
         max_iter=max_iter,
         icm_iter=icm_iter,
         period_sigma=period_sigma,
+        e_chunk=e_chunk,
         verbose=verbose,
     )
 

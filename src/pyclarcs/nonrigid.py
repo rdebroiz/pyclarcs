@@ -23,7 +23,7 @@ Notation
 Outer loop (max_iter iterations)
 ---------------------------------
 
-E-step — doubly-stochastic fuzzy correspondences
+E-step — doubly-stochastic fuzzy correspondences (two-pass, O(N+M) memory)
   For each vertex i:
       T_i = x_i + d_i                       (current transformed position)
 
@@ -39,6 +39,14 @@ E-step — doubly-stochastic fuzzy correspondences
 
       Total weight:  W_i  = Σ_j ṽ_ij
       Target point:  ȳ_i  = (Σ_j ṽ_ij y_j) / W_i
+
+  The E-step is split into two chunked passes so that the KDTree
+  query results are never accumulated into a large sparse matrix:
+    Pass 1 — stream through all vertices in batches of `e_chunk` to
+             accumulate sR_i and sC_j.
+    Pass 2 — repeat the same batched query and use the pre-computed
+             inverses to accumulate W_i and ȳ_i directly.
+  Peak extra memory per pass: O(e_chunk × avg_neighbours).
 
 M-step — Jacobi ICM (icm_iter inner iterations)
   For each i:
@@ -59,13 +67,14 @@ DEFAULT PARAMETERS (matching the original C++ NonLinearRegistration)
   icm_iter     = 120    inner Jacobi steps per outer iteration
   period_sigma = 40     sigma halved every 40 outer iterations
   sigma_min    = 0.1
+  e_chunk      = 2000   vertices per KDTree query batch (memory cap)
 """
 
 from __future__ import annotations
 
 import numpy as np
 from scipy.spatial import KDTree
-from scipy.sparse import csr_matrix, diags as sp_diags
+from scipy.sparse import csr_matrix
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +95,7 @@ def nonrigid_icp(
     icm_iter: int = 120,
     period_sigma: int = 40,
     sigma_min: float = 0.1,
+    e_chunk: int = 2000,
     verbose: bool = True,
 ) -> np.ndarray:
     """Register a moving surface onto a reference using non-rigid EM-ICP.
@@ -121,6 +131,9 @@ def nonrigid_icp(
         Number of outer iterations between each halving of sigma.
     sigma_min : float
         Minimum value of sigma (annealing floor).
+    e_chunk : int
+        Number of vertices processed per KDTree query batch in the E-step.
+        Reduce to lower peak memory at the cost of more Python overhead.
     verbose : bool
         Print iteration progress.
 
@@ -146,81 +159,81 @@ def nonrigid_icp(
     ref_tree = KDTree(ref_pts)
 
     for it in range(max_iter):
-        # ------------------------------------------------------------
-        # E-step: build doubly-stochastic correspondence matrix
-        # ------------------------------------------------------------
         transformed = mov_pts + def_field  # (N, 3)
 
-        # For each transformed point, find all ref vertices within dist_cutoff.
-        # query_ball_point returns variable-length lists; we flatten them into
-        # COO arrays for scipy sparse construction.
-        nbrs_list = ref_tree.query_ball_point(
-            transformed, dist_cutoff, return_sorted=False
-        )
+        # ------------------------------------------------------------
+        # E-step: doubly-stochastic correspondences — two chunked passes
+        # ------------------------------------------------------------
+        # Pass 1 — accumulate row sums sR_i and column sums sC_j
+        # without storing all neighbour lists simultaneously.
+        # ------------------------------------------------------------
+        row_sums = np.zeros(N, dtype=float)
+        col_sums = np.zeros(M, dtype=float)
+        has_corr = False
 
-        # Pre-allocate output arrays at worst-case size, then trim.
-        max_entries = sum(len(nb) for nb in nbrs_list)
-        row_buf = np.empty(max_entries, dtype=np.int32)
-        col_buf = np.empty(max_entries, dtype=np.int32)
-        w_buf   = np.empty(max_entries, dtype=float)
-        ptr = 0
+        for start in range(0, N, e_chunk):
+            end = min(start + e_chunk, N)
+            nbrs_chunk = ref_tree.query_ball_point(
+                transformed[start:end], dist_cutoff, return_sorted=False
+            )
+            for local_i, nbrs in enumerate(nbrs_chunk):
+                if not nbrs:
+                    continue
+                i = start + local_i
+                nbrs_arr = np.asarray(nbrs, dtype=np.int32)
+                diffs    = ref_pts[nbrs_arr] - transformed[i]
+                dists    = np.linalg.norm(diffs, axis=1)
+                valid    = (ref_normals[nbrs_arr] @ mov_normals[i]) >= 0.0
+                nbrs_v   = nbrs_arr[valid]
+                if len(nbrs_v) == 0:
+                    continue
+                wv = np.exp(-dists[valid] / sigma)
+                row_sums[i] += wv.sum()
+                np.add.at(col_sums, nbrs_v, wv)
+                has_corr = True
 
-        for i, nbrs in enumerate(nbrs_list):
-            if not nbrs:
-                continue
-            nbrs_arr = np.asarray(nbrs, dtype=np.int32)
-
-            T_i = transformed[i]                            # (3,)
-            ni  = mov_normals[i]                            # (3,)
-
-            # Vectorised distance and normal-compatibility check
-            diffs    = ref_pts[nbrs_arr] - T_i              # (K, 3)
-            dists    = np.linalg.norm(diffs, axis=1)        # (K,)
-            dot_prod = ref_normals[nbrs_arr] @ ni           # (K,)
-            valid    = dot_prod >= 0.0                      # normal filter
-
-            nbrs_v = nbrs_arr[valid]
-            dists_v = dists[valid]
-            if len(nbrs_v) == 0:
-                continue
-
-            wv = np.exp(-dists_v / sigma)
-            k  = len(nbrs_v)
-
-            row_buf[ptr:ptr + k] = i
-            col_buf[ptr:ptr + k] = nbrs_v
-            w_buf  [ptr:ptr + k] = wv
-            ptr += k
-
-        if ptr == 0:
+        if not has_corr:
             if verbose:
                 print(f"  iter {it:3d}: no correspondences — stopping early.")
             break
 
-        rows = row_buf[:ptr]
-        cols = col_buf[:ptr]
-        wvals = w_buf[:ptr]
-
-        W = csr_matrix((wvals, (rows, cols)), shape=(N, M))
-
-        # Row sums sR_i = Σ_j w_ij,  col sums sC_j = Σ_i w_ij
-        row_sums = np.asarray(W.sum(axis=1), dtype=float).ravel()  # (N,)
-        col_sums = np.asarray(W.sum(axis=0), dtype=float).ravel()  # (M,)
-
-        row_inv = np.zeros_like(row_sums)
         nz_r = row_sums > 0.0
+        row_inv = np.zeros(N)
         row_inv[nz_r] = 1.0 / row_sums[nz_r]
 
-        col_inv = np.zeros_like(col_sums)
         nz_c = col_sums > 0.0
+        col_inv = np.zeros(M)
         col_inv[nz_c] = 1.0 / col_sums[nz_c]
 
-        # W_norm1[i,j] = w_ij / sC_j   →  W @ diag(col_inv)
-        # W_norm2[i,j] = w_ij / sR_i   →  diag(row_inv) @ W
-        W_comb = W @ sp_diags(col_inv) + sp_diags(row_inv) @ W  # (N, M)
+        # ------------------------------------------------------------
+        # Pass 2 — compute doubly-stochastic barycentres
+        #   ṽ_ij = w_ij · (1/sC_j + 1/sR_i)
+        #   W_i  = Σ_j ṽ_ij
+        #   ȳ_i  = (Σ_j ṽ_ij · y_j) / W_i
+        # ------------------------------------------------------------
+        weight_out = np.zeros(N, dtype=float)
+        corresBary = np.zeros((N, 3), dtype=float)
 
-        weight_out = np.asarray(W_comb.sum(axis=1), dtype=float).ravel()  # (N,)
-        corresBary = np.asarray(W_comb @ ref_pts, dtype=float)             # (N, 3)
+        for start in range(0, N, e_chunk):
+            end = min(start + e_chunk, N)
+            nbrs_chunk = ref_tree.query_ball_point(
+                transformed[start:end], dist_cutoff, return_sorted=False
+            )
+            for local_i, nbrs in enumerate(nbrs_chunk):
+                if not nbrs:
+                    continue
+                i = start + local_i
+                nbrs_arr = np.asarray(nbrs, dtype=np.int32)
+                diffs    = ref_pts[nbrs_arr] - transformed[i]
+                dists    = np.linalg.norm(diffs, axis=1)
+                valid    = (ref_normals[nbrs_arr] @ mov_normals[i]) >= 0.0
+                nbrs_v   = nbrs_arr[valid]
+                if len(nbrs_v) == 0:
+                    continue
+                wv      = np.exp(-dists[valid] / sigma)
+                v_tilde = wv * (col_inv[nbrs_v] + row_inv[i])
+                weight_out[i] = v_tilde.sum()
+                corresBary[i] = (v_tilde[:, np.newaxis] * ref_pts[nbrs_v]).sum(axis=0)
 
         inlier_mask = weight_out > 0.0
         corresBary[inlier_mask] /= weight_out[inlier_mask, np.newaxis]
