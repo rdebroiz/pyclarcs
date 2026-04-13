@@ -353,7 +353,7 @@ def normalize(input_path, output_path, target, quiet):
               help="Minimum sigma (annealing floor).")
 @click.option("--e-chunk",      default=2000,  show_default=True, type=int,
               help="Vertices per KDTree batch in the E-step (lower = less RAM).")
-@click.option("--n-levels",     default=1,     show_default=True, type=int,
+@click.option("--n-levels",     default=3,     show_default=True, type=int,
               help="Number of resolution levels (1 = single-res, ≥2 = multi-res).")
 @click.option("--coarsest-n",   default=2000,  show_default=True, type=int,
               help="Target vertex count at the coarsest level (multi-res only).")
