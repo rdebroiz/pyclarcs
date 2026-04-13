@@ -357,7 +357,7 @@ def normalize(input_path, output_path, target, quiet):
               help="Number of resolution levels (1 = single-res, ≥2 = multi-res).")
 @click.option("--coarsest-n",        default=2000, show_default=True, type=int,
               help="Target vertex count at the coarsest level (multi-res only).")
-@click.option("--beta-coarse-factor", default=3.0, show_default=True, type=float,
+@click.option("--beta-coarse-factor", default=1.0, show_default=True, type=float,
               help="Per-level beta multiplier toward coarser levels (multi-res only). "
                    "beta at level idx = beta × factor^idx (idx=0: finest).")
 @_verbose_option

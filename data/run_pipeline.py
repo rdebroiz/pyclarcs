@@ -261,7 +261,7 @@ def _print_summary(ref_path: Path, before_path: Path, registered_path: Path) -> 
               help="Resolution levels for multi-res registration (1 = single-res).")
 @click.option("--coarsest-n",        default=2000, show_default=True, type=int,
               help="Target vertices at the coarsest level.")
-@click.option("--beta-coarse-factor", default=3.0, show_default=True, type=float,
+@click.option("--beta-coarse-factor", default=1.0, show_default=True, type=float,
               help="Per-level beta multiplier toward coarser levels (multi-res only).")
 @click.option("-q", "--quiet",  is_flag=True, help="Suppress all output.")
 def main(

@@ -423,7 +423,7 @@ def nonrigid_icp_multires(
     target_n_coarsest: int = 2000,
     sigma: float | None = None,
     beta: float = 10.0,
-    beta_coarse_factor: float = 3.0,
+    beta_coarse_factor: float = 1.0,
     dist_cutoff: float | None = None,
     max_iter: int = 80,
     icm_iter: int = 50,
@@ -473,19 +473,24 @@ def nonrigid_icp_multires(
     beta : float
         Regularisation weight at the **finest** level.
     beta_coarse_factor : float
-        Multiplier applied to beta at each coarser level.  With the
-        default value of 3.0 and three levels the schedule is:
+        Multiplier applied to beta at each coarser level.  Default is
+        1.0 (same beta at every level).  The coarsest levels already
+        have implicit geometric regularisation because their low vertex
+        count (≈ target_n_coarsest) cannot represent high-frequency
+        deformations; artificially increasing beta there prevents
+        necessary large-scale corrections from being made.
 
-          finest (idx=0)       : beta × 3⁰ = beta
-          intermediate (idx=1) : beta × 3¹ = beta × 3
-          coarsest (idx=2)     : beta × 3² = beta × 9
+          finest (idx=0)       : beta × factor⁰ = beta
+          intermediate (idx=1) : beta × factor¹
+          coarsest (idx=2)     : beta × factor²
 
-        Higher values at coarse levels enforce smoother global
-        deformations; the user-specified *beta* controls local detail
-        at the finest level.  Set to 1.0 to use the same beta everywhere.
+        Use a value > 1 (e.g. 2–3) to enforce extra smoothing at coarse
+        levels, or leave at 1.0 for equal regularisation at all levels.
     max_iter : int
-        Outer iterations at the **finest** level.  Each coarser level
-        uses ``max_iter`` iterations as well (coarse levels are cheap).
+        Outer iterations at every level.  Coarse levels are cheap (few
+        vertices); the finest level warm-starts from the interpolated
+        coarse solution so it needs fewer corrections, but the full
+        budget is kept so sigma annealing runs to completion.
     icm_iter : int
         Maximum CG iterations per outer iteration (same at all levels).
     sigma_min : float
@@ -553,13 +558,18 @@ def nonrigid_icp_multires(
         else:
             init_l = _interpolate_field(def_field_prev, pts_prev, pts_l)
 
-        # Fewer iterations at the finest level: the coarse levels already
-        # captured the large-scale deformation.
-        max_iter_l = (max_iter // 2) if is_finest and n_actual > 1 else max_iter
+        # All levels run max_iter outer iterations.  Coarse levels are
+        # cheap (few vertices) and need to do the heavy lifting; the fine
+        # level warm-starts from the interpolated coarse solution so it
+        # only needs to refine, but still benefits from the full budget.
+        max_iter_l = max_iter
 
-        # β increases geometrically toward coarser levels so that the
-        # coarse stages enforce smooth global deformations while the
-        # fine stage is free to capture local anatomical detail.
+        # β scales geometrically toward coarser levels.
+        # With the default factor=1.0 every level uses the same β; the
+        # coarse levels' implicit regularisation comes from their low DOF
+        # (2 000 vertices cannot represent high-frequency deformations),
+        # so an artificially high β at coarse levels is unnecessary and
+        # prevents large-scale corrections from being made.
         beta_l = beta * (beta_coarse_factor ** idx)
 
         if verbose:
