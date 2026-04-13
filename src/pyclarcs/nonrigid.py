@@ -44,13 +44,16 @@ E-step — doubly-stochastic fuzzy correspondences
   (rows, cols, weights).  Row/col sums and barycentres are then computed
   with numpy bincount — no N×M sparse matrix is ever constructed.
 
-M-step — Jacobi ICM (icm_iter inner iterations)
-  For each i:
-      d_i ← ( W_i (ȳ_i − x_i)  +  β Σ_{j ∈ N_i} d_j )
-              / ( β |N_i| + W_i )
+M-step — preconditioned conjugate gradient
+  Solves the sparse linear system  M · d[:,k] = b[:,k]  independently
+  for each coordinate k ∈ {0, 1, 2}:
 
-  Points with no correspondences (W_i = 0) are interpolated from
-  their mesh neighbours:   d_i ← (Σ_{j ∈ N_i} d_j) / |N_i|.
+      M   =  diag(W_i + β·|N_i|)  −  β · A          (symmetric PSD)
+      b_i =  W_i · (ȳ_i − x_i)_k
+
+  Preconditioning with the diagonal of M (Jacobi preconditioner) gives
+  O(√κ) convergence vs. O(κ) for unaccelerated Jacobi.  The previous
+  outer-iteration solution warm-starts the solve.
 
 Annealing
   σ ← max(σ / 2,  σ_min)   every `period_sigma` outer iterations.
@@ -60,7 +63,7 @@ DEFAULT PARAMETERS (matching the original C++ NonLinearRegistration)
   beta         = 100.0  regularisation weight
   dist_cutoff  = 15.0   search radius
   max_iter     = 80
-  icm_iter     = 120    inner Jacobi steps per outer iteration
+  icm_iter     = 50     max CG iterations per outer iteration
   period_sigma = 40     sigma halved every 40 outer iterations
   sigma_min    = 0.1
   e_chunk      = 2000   vertices per KDTree query batch
@@ -72,7 +75,8 @@ import math
 
 import numpy as np
 from scipy.spatial import KDTree
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, diags as sp_diags
+from scipy.sparse.linalg import cg as sp_cg
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +164,7 @@ def nonrigid_icp(
     beta: float = 100.0,
     dist_cutoff: float = 15.0,
     max_iter: int = 80,
-    icm_iter: int = 120,
+    icm_iter: int = 50,
     period_sigma: int = 40,
     sigma_min: float = 0.1,
     e_chunk: int = 2000,
@@ -171,7 +175,7 @@ def nonrigid_icp(
     The algorithm iterates between:
       - computing doubly-stochastic fuzzy correspondences (E-step), and
       - solving for the deformation field with Laplacian regularisation
-        via Jacobi ICM (M-step).
+        via preconditioned conjugate gradient (M-step).
 
     Parameters
     ----------
@@ -200,7 +204,7 @@ def nonrigid_icp(
     max_iter : int
         Number of outer EM iterations.
     icm_iter : int
-        Number of Jacobi ICM steps per outer iteration.
+        Maximum number of conjugate gradient iterations per outer iteration.
     period_sigma : int
         Number of outer iterations between each halving of sigma.
     sigma_min : float
@@ -307,25 +311,32 @@ def nonrigid_icp(
         corresBary[inlier_mask] /= weight_out[inlier_mask, np.newaxis]
 
         # ------------------------------------------------------------
-        # M-step: Jacobi ICM
+        # M-step: preconditioned conjugate gradient
         # Minimises:  Σ_i W_i ‖x_i + d_i − ȳ_i‖²
         #           + β Σ_{(i,j)∈edges} ‖d_i − d_j‖²
-        # Closed-form per-node update (Jacobi):
-        #   d_i ← (W_i (ȳ_i − x_i) + β Σ_{j∈N_i} d_j) / (β|N_i| + W_i)
+        # Equivalent to solving the symmetric PSD system:
+        #   M · d[:,k] = b[:,k]   for k ∈ {0, 1, 2}
+        # where
+        #   M   = diag(W_i + β·|N_i|)  −  β · adjacency
+        #   b_i = W_i · (ȳ_i − x_i)_k
+        # Jacobi preconditioner M_inv = diag(1 / diag(M)).
+        # Each coordinate is solved independently; the previous d warm-starts.
         # ------------------------------------------------------------
         target_offset = corresBary - mov_pts  # (N, 3)
 
-        for _ in range(icm_iter):
-            neigh_sum = adjacency @ def_field                   # (N, 3)
-            denom = beta * neigh_count + weight_out             # (N,)
-            valid_denom = denom > 0.0
+        diag_vals = weight_out + beta * neigh_count          # (N,)
+        M_mat  = sp_diags(diag_vals) - beta * adjacency     # (N, N) PSD
+        M_prec = sp_diags(1.0 / np.maximum(diag_vals, 1e-10))  # Jacobi precond
+        rhs    = weight_out[:, np.newaxis] * target_offset  # (N, 3)
 
-            new_field = def_field.copy()
-            new_field[valid_denom] = (
-                weight_out[valid_denom, np.newaxis] * target_offset[valid_denom]
-                + beta * neigh_sum[valid_denom]
-            ) / denom[valid_denom, np.newaxis]
-            def_field = new_field
+        for k in range(3):
+            def_field[:, k], _ = sp_cg(
+                M_mat, rhs[:, k],
+                x0=def_field[:, k],
+                M=M_prec,
+                rtol=1e-5,
+                maxiter=icm_iter,
+            )
 
         # ------------------------------------------------------------
         # Annealing: halve sigma every period_sigma iterations
@@ -414,7 +425,7 @@ def nonrigid_icp_multires(
     beta: float = 100.0,
     dist_cutoff: float | None = None,
     max_iter: int = 80,
-    icm_iter: int = 120,
+    icm_iter: int = 50,
     period_sigma: int | None = None,
     sigma_min: float = 0.1,
     e_chunk: int = 2000,
@@ -464,7 +475,7 @@ def nonrigid_icp_multires(
         Outer iterations at the **finest** level.  Each coarser level
         uses ``max_iter`` iterations as well (coarse levels are cheap).
     icm_iter : int
-        Jacobi ICM steps per outer iteration (same at all levels).
+        Maximum CG iterations per outer iteration (same at all levels).
     sigma_min : float
         Annealing floor (same at all levels).
     e_chunk : int

@@ -345,8 +345,8 @@ def normalize(input_path, output_path, target, quiet):
               help="Search radius [mm]. Auto-estimated from surfaces if omitted.")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
-@click.option("--icm-iter",     default=120,   show_default=True, type=int,
-              help="Number of Jacobi ICM steps per outer iteration.")
+@click.option("--icm-iter",     default=50,    show_default=True, type=int,
+              help="Max conjugate gradient iterations per outer iteration.")
 @click.option("--period-sigma", default=None,  type=int,
               help="Halve sigma every this many iterations. Auto-estimated if omitted.")
 @click.option("--sigma-min",    default=0.1,   show_default=True, type=float,

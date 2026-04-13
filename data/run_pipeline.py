@@ -244,8 +244,8 @@ def _print_summary(ref_path: Path, target_path: Path, registered_path: Path) -> 
               help="Search radius [mm] (auto-estimated if omitted).")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
-@click.option("--icm-iter",     default=120,   show_default=True, type=int,
-              help="Number of Jacobi ICM steps per outer iteration.")
+@click.option("--icm-iter",     default=50,    show_default=True, type=int,
+              help="Max conjugate gradient iterations per outer iteration.")
 @click.option("--period-sigma", default=None,  type=int,
               help="Halve sigma every N iterations (auto-estimated if omitted).")
 @click.option("--n-levels",    default=3,     show_default=True, type=int,
