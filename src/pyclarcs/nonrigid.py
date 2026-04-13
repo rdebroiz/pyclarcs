@@ -88,7 +88,7 @@ def estimate_registration_params(
     ref_pts: np.ndarray,
     *,
     max_iter: int = 80,
-    sigma_min: float = 0.1,
+    sigma_min: float | None = None,
     n_sample: int = 2000,
     seed: int = 0,
 ) -> dict:
@@ -96,7 +96,9 @@ def estimate_registration_params(
 
     A random subsample of the moving surface is queried against the
     reference KDTree to obtain the nearest-neighbour distance distribution,
-    which directly characterises the initial surface-to-surface gap.
+    which directly characterises the initial surface-to-surface gap.  A
+    self-NN query on the same subsample gives the local mesh spacing, which
+    drives the annealing floor and regularisation weight.
 
     Parameters
     ----------
@@ -104,8 +106,9 @@ def estimate_registration_params(
     ref_pts : ndarray (M, 3)
     max_iter : int
         Outer iterations (needed to compute period_sigma).
-    sigma_min : float
-        Annealing floor (needed to compute period_sigma).
+    sigma_min : float or None
+        Annealing floor.  None → auto from mesh spacing
+        (``max(0.1, mesh_spacing / 2)``).
     n_sample : int
         Number of moving points to subsample for the distance estimate.
     seed : int
@@ -113,24 +116,45 @@ def estimate_registration_params(
 
     Returns
     -------
-    dict with keys ``sigma``, ``dist_cutoff``, ``period_sigma``.
+    dict with keys ``sigma``, ``dist_cutoff``, ``period_sigma``,
+    ``sigma_min``, ``beta``, ``n_levels``, ``mesh_spacing``.
 
     Notes
     -----
     Heuristics
-      sigma        = 50th percentile of NN distances (median gap)
-      dist_cutoff  = 99th percentile of NN distances × 1.5
+      mesh_spacing = median 1-NN distance within the moving surface sample
+      sigma_min    = max(0.1, mesh_spacing / 2)   [if not overridden]
+      beta         = max(1.0, 4.0 × mesh_spacing) [regularisation weight]
+      n_levels     = 1 if N≤5 000 else 2 if N≤30 000 else 3
+      sigma        = 50th percentile of NN-to-ref distances (median gap)
+      dist_cutoff  = 99th percentile of NN-to-ref distances × 1.5
                      (floor: sigma × 3)
       period_sigma = max_iter // ceil(log2(sigma / sigma_min))
-                     (number of halvings needed from sigma to sigma_min,
-                      spread evenly across the outer iterations)
+                     (halvings from sigma to sigma_min spread evenly)
     """
     rng = np.random.default_rng(seed)
     mov_pts = np.asarray(mov_pts, dtype=float)
     ref_pts = np.asarray(ref_pts, dtype=float)
 
     idx = rng.choice(len(mov_pts), size=min(n_sample, len(mov_pts)), replace=False)
-    nn_dists, _ = KDTree(ref_pts).query(mov_pts[idx], k=1, workers=-1)
+    sample = mov_pts[idx]
+
+    # Nearest-neighbour to reference: characterises the surface-to-surface gap.
+    nn_dists, _ = KDTree(ref_pts).query(sample, k=1, workers=-1)
+
+    # Self-NN within the moving surface: characterises the mesh spacing.
+    # k=2 because k=1 is the point itself (distance 0).
+    nn_self, _ = KDTree(mov_pts).query(sample, k=2, workers=-1)
+    mesh_spacing = float(np.median(nn_self[:, 1]))
+
+    # Derived annealing floor and regularisation weight.
+    if sigma_min is None:
+        sigma_min = max(0.1, mesh_spacing / 2.0)
+    beta = max(1.0, 4.0 * mesh_spacing)
+
+    # Recommended number of resolution levels.
+    N = len(mov_pts)
+    n_levels = 1 if N <= 5_000 else (2 if N <= 30_000 else 3)
 
     sigma = float(np.percentile(nn_dists, 50))
     sigma = max(sigma, sigma_min * 2)          # floor: at least two halvings
@@ -142,9 +166,13 @@ def estimate_registration_params(
     period_sigma = max(1, max_iter // n_halvings)
 
     return {
-        "sigma":        round(sigma,       4),
-        "dist_cutoff":  round(dist_cutoff, 4),
+        "sigma":        round(sigma,        4),
+        "dist_cutoff":  round(dist_cutoff,  4),
         "period_sigma": period_sigma,
+        "sigma_min":    round(sigma_min,    4),
+        "beta":         round(beta,         4),
+        "n_levels":     n_levels,
+        "mesh_spacing": round(mesh_spacing, 4),
     }
 
 
@@ -422,13 +450,13 @@ def nonrigid_icp_multires(
     n_levels: int = 3,
     target_n_coarsest: int = 2000,
     sigma: float | None = None,
-    beta: float = 10.0,
+    beta: float | None = None,
     beta_coarse_factor: float = 1.0,
     dist_cutoff: float | None = None,
     max_iter: int = 80,
     icm_iter: int = 50,
     period_sigma: int | None = None,
-    sigma_min: float = 0.1,
+    sigma_min: float | None = None,
     e_chunk: int = 2000,
     verbose: bool = True,
 ) -> np.ndarray:
@@ -469,23 +497,19 @@ def nonrigid_icp_multires(
         Target vertex count at the coarsest level.  Intermediate levels
         are placed geometrically between this value and ``len(mov_pts)``.
     sigma, dist_cutoff, period_sigma : float or None
-        Override the auto-estimated values at every level.
-    beta : float
-        Regularisation weight at the **finest** level.
+        Override the auto-estimated values at every level.  None (default)
+        triggers per-level re-estimation from the current residual.
+    beta : float or None
+        Regularisation weight.  None (default) → auto-estimated per level
+        from the level's mesh spacing (``4 × mesh_spacing``).  Because
+        coarser decimated meshes have larger spacing, this naturally yields
+        a higher β at coarse levels without needing ``beta_coarse_factor``.
     beta_coarse_factor : float
-        Multiplier applied to beta at each coarser level.  Default is
-        1.0 (same beta at every level).  The coarsest levels already
-        have implicit geometric regularisation because their low vertex
-        count (≈ target_n_coarsest) cannot represent high-frequency
-        deformations; artificially increasing beta there prevents
-        necessary large-scale corrections from being made.
-
-          finest (idx=0)       : beta × factor⁰ = beta
-          intermediate (idx=1) : beta × factor¹
-          coarsest (idx=2)     : beta × factor²
-
-        Use a value > 1 (e.g. 2–3) to enforce extra smoothing at coarse
-        levels, or leave at 1.0 for equal regularisation at all levels.
+        Multiplier applied to *explicit* beta values at each coarser level
+        (finest idx=0, coarsest idx=L-1).  Ignored when beta is None.
+    sigma_min : float or None
+        Annealing floor.  None (default) → auto-estimated per level from
+        the level's mesh spacing (``max(0.1, mesh_spacing / 2)``).
     max_iter : int
         Outer iterations at every level.  Coarse levels are cheap (few
         vertices); the finest level warm-starts from the interpolated
@@ -493,8 +517,6 @@ def nonrigid_icp_multires(
         budget is kept so sigma annealing runs to completion.
     icm_iter : int
         Maximum CG iterations per outer iteration (same at all levels).
-    sigma_min : float
-        Annealing floor (same at all levels).
     e_chunk : int
         KDTree batch size (same at all levels).
     verbose : bool
@@ -564,40 +586,39 @@ def nonrigid_icp_multires(
         # only needs to refine, but still benefits from the full budget.
         max_iter_l = max_iter
 
-        # β scales geometrically toward coarser levels.
-        # With the default factor=1.0 every level uses the same β; the
-        # coarse levels' implicit regularisation comes from their low DOF
-        # (2 000 vertices cannot represent high-frequency deformations),
-        # so an artificially high β at coarse levels is unnecessary and
-        # prevents large-scale corrections from being made.
-        beta_l = beta * (beta_coarse_factor ** idx)
+        # β: if an explicit value was provided, scale geometrically toward
+        # coarser levels; if None, auto-estimate per level (below).
+        beta_l = (beta * (beta_coarse_factor ** idx)) if beta is not None else None
+
+        # Auto-estimate params from current residual (and mesh spacing).
+        transformed_l = pts_l if init_l is None else pts_l + init_l
+        sigma_l    = sigma
+        cutoff_l   = dist_cutoff
+        period_l   = period_sigma
+        sigma_min_l = sigma_min
+
+        if sigma_l is None or cutoff_l is None or period_l is None \
+                or beta_l is None or sigma_min_l is None:
+            auto = estimate_registration_params(
+                transformed_l, ref_pts,
+                max_iter=max_iter_l,
+                sigma_min=sigma_min,   # None → auto from mesh spacing
+            )
+            if sigma_l    is None: sigma_l    = auto["sigma"]
+            if cutoff_l   is None: cutoff_l   = auto["dist_cutoff"]
+            if period_l   is None: period_l   = auto["period_sigma"]
+            if beta_l     is None: beta_l     = auto["beta"]
+            if sigma_min_l is None: sigma_min_l = auto["sigma_min"]
 
         if verbose:
             label = "finest" if is_finest else f"level {idx}"
             print(
                 f"\n  [multires] {label}  {N_l} vertices"
-                f"  {max_iter_l} outer iterations  β={beta_l:.1f}"
+                f"  {max_iter_l} outer iterations"
+                f"  β={beta_l:.2f}  σ_min={sigma_min_l:.3f}"
+                f"  σ={sigma_l:.3f}  r={cutoff_l:.2f}"
+                f"  period_σ={period_l}"
             )
-
-        # Auto-estimate params from current residual
-        transformed_l = pts_l if init_l is None else pts_l + init_l
-        sigma_l       = sigma
-        cutoff_l      = dist_cutoff
-        period_l      = period_sigma
-
-        if sigma_l is None or cutoff_l is None or period_l is None:
-            auto = estimate_registration_params(
-                transformed_l, ref_pts,
-                max_iter=max_iter_l, sigma_min=sigma_min,
-            )
-            if sigma_l  is None: sigma_l  = auto["sigma"]
-            if cutoff_l is None: cutoff_l = auto["dist_cutoff"]
-            if period_l is None: period_l = auto["period_sigma"]
-            if verbose:
-                print(
-                    f"    auto params:  σ={sigma_l}  r={cutoff_l}"
-                    f"  period_σ={period_l}"
-                )
 
         def_field_l = nonrigid_icp(
             pts_l, normals_l,
@@ -610,7 +631,7 @@ def nonrigid_icp_multires(
             max_iter=max_iter_l,
             icm_iter=icm_iter,
             period_sigma=period_l,
-            sigma_min=sigma_min,
+            sigma_min=sigma_min_l,
             e_chunk=e_chunk,
             verbose=verbose,
         )

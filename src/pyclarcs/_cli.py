@@ -338,27 +338,27 @@ def normalize(input_path, output_path, target, quiet):
 @click.option("--deformation", default=None, metavar="FIELD",
               help="Also save the deformation field to this VTK file.")
 @click.option("--sigma",        default=None,  type=float,
-              help="Initial bandwidth [mm]. Auto-estimated from surfaces if omitted.")
-@click.option("--beta",         default=10.0,  show_default=True, type=float,
-              help="Regularisation weight (higher = smoother).")
+              help="Initial bandwidth [mm]. Auto-estimated per level if omitted.")
+@click.option("--beta",         default=None,  type=float,
+              help="Regularisation weight. Auto-estimated from mesh spacing if omitted.")
 @click.option("--dist-cutoff",  default=None,  type=float,
-              help="Search radius [mm]. Auto-estimated from surfaces if omitted.")
+              help="Search radius [mm]. Auto-estimated per level if omitted.")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
 @click.option("--icm-iter",     default=50,    show_default=True, type=int,
               help="Max conjugate gradient iterations per outer iteration.")
 @click.option("--period-sigma", default=None,  type=int,
               help="Halve sigma every this many iterations. Auto-estimated if omitted.")
-@click.option("--sigma-min",    default=0.1,   show_default=True, type=float,
-              help="Minimum sigma (annealing floor).")
+@click.option("--sigma-min",    default=None,  type=float,
+              help="Minimum sigma (annealing floor). Auto-estimated from mesh spacing if omitted.")
 @click.option("--e-chunk",      default=2000,  show_default=True, type=int,
               help="Vertices per KDTree batch in the E-step (lower = less RAM).")
-@click.option("--n-levels",          default=3,    show_default=True, type=int,
-              help="Number of resolution levels (1 = single-res, ≥2 = multi-res).")
+@click.option("--n-levels",          default=None, type=int,
+              help="Resolution levels (1=single-res, ≥2=multi-res). Auto from surface size if omitted.")
 @click.option("--coarsest-n",        default=2000, show_default=True, type=int,
               help="Target vertex count at the coarsest level (multi-res only).")
 @click.option("--beta-coarse-factor", default=1.0, show_default=True, type=float,
-              help="Per-level beta multiplier toward coarser levels (multi-res only). "
+              help="Per-level beta multiplier toward coarser levels (only used when --beta is set). "
                    "beta at level idx = beta × factor^idx (idx=0: finest).")
 @_verbose_option
 def nlregister(input_path, ref_path, output_path, deformation,
@@ -368,6 +368,11 @@ def nlregister(input_path, ref_path, output_path, deformation,
 
     Outputs the warped INPUT surface.  Optionally saves the per-vertex
     deformation field as a VTK file with VECTORS point data.
+
+    All registration parameters (sigma, beta, sigma-min, n-levels) are
+    auto-estimated from the surfaces when omitted.  sigma, dist-cutoff and
+    period-sigma are re-estimated at each resolution level from the current
+    residual; beta and sigma-min are derived from the level's mesh spacing.
     """
     verbose = not quiet
 
@@ -377,8 +382,7 @@ def nlregister(input_path, ref_path, output_path, deformation,
     from pyclarcs.io import (
         load_surface_with_normals, save_surface, save_deformation_vtk,
     )
-    from pyclarcs.mesh import adjacency_csr
-    from pyclarcs.nonrigid import nonrigid_icp, apply_deformation
+    from pyclarcs.nonrigid import nonrigid_icp_multires, apply_deformation
 
     if verbose:
         click.echo(f"Loading moving surface: {input_path}")
@@ -392,79 +396,50 @@ def nlregister(input_path, ref_path, output_path, deformation,
     if verbose:
         click.echo(f"  {len(ref_pts)} points")
 
-    if n_levels > 1:
-        # Multi-res: pass CLI values (possibly None) directly so that
-        # nonrigid_icp_multires can re-estimate params per level from the
-        # current residual.  Pre-estimating here would freeze sigma at its
-        # initial value and prevent per-level adaptation.
-        from pyclarcs.nonrigid import nonrigid_icp_multires
+    # Resolve n_levels (the only parameter that cannot be deferred to multires
+    # because it controls how many levels to build).
+    if n_levels is None:
+        N = len(mov_pts)
+        n_levels = 1 if N <= 5_000 else (2 if N <= 30_000 else 3)
         if verbose:
             click.echo(
-                f"Non-linear EM-ICP  multi-res {n_levels} levels"
-                f"  coarsest={coarsest_n} pts"
-                f"  β={beta}  iter={max_iter}×{icm_iter}"
+                f"  auto n_levels={n_levels}  ({N} moving vertices)"
             )
-            if sigma is None or dist_cutoff is None or period_sigma is None:
-                click.echo("  σ / r / period_σ: auto-estimated per level from residual")
-        def_field = nonrigid_icp_multires(
-            mov_pts, mov_normals,
-            ref_pts, ref_normals,
-            mov_poly,
-            n_levels=n_levels,
-            target_n_coarsest=coarsest_n,
-            sigma=sigma,
-            beta=beta,
-            beta_coarse_factor=beta_coarse_factor,
-            dist_cutoff=dist_cutoff,
-            max_iter=max_iter,
-            icm_iter=icm_iter,
-            period_sigma=period_sigma,
-            sigma_min=sigma_min,
-            e_chunk=e_chunk,
-            verbose=verbose,
+
+    if verbose:
+        auto_str = []
+        if beta      is None: auto_str.append("β")
+        if sigma_min is None: auto_str.append("σ_min")
+        if sigma     is None: auto_str.append("σ")
+        if dist_cutoff   is None: auto_str.append("r")
+        if period_sigma  is None: auto_str.append("period_σ")
+        auto_note = (
+            f"  auto per level: {', '.join(auto_str)}" if auto_str else ""
         )
-    else:
-        # Single-res: auto-estimate once from the full surfaces.
-        if sigma is None or dist_cutoff is None or period_sigma is None:
-            from pyclarcs.nonrigid import estimate_registration_params
-            auto = estimate_registration_params(
-                mov_pts, ref_pts,
-                max_iter=max_iter, sigma_min=sigma_min,
-            )
-            if sigma is None:
-                sigma = auto["sigma"]
-            if dist_cutoff is None:
-                dist_cutoff = auto["dist_cutoff"]
-            if period_sigma is None:
-                period_sigma = auto["period_sigma"]
-            if verbose:
-                click.echo(
-                    f"Auto params:  σ={sigma}  r={dist_cutoff}"
-                    f"  period_σ={period_sigma}"
-                )
-        if verbose:
-            click.echo("Building mesh adjacency…")
-        adj = adjacency_csr(mov_poly, len(mov_pts))
-        if verbose:
-            click.echo(
-                f"Non-linear EM-ICP  "
-                f"σ={sigma}  β={beta}  r={dist_cutoff}  "
-                f"iter={max_iter}×{icm_iter}"
-            )
-        def_field = nonrigid_icp(
-            mov_pts, mov_normals,
-            ref_pts, ref_normals,
-            adj,
-            sigma=sigma,
-            beta=beta,
-            dist_cutoff=dist_cutoff,
-            max_iter=max_iter,
-            icm_iter=icm_iter,
-            period_sigma=period_sigma,
-            sigma_min=sigma_min,
-            e_chunk=e_chunk,
-            verbose=verbose,
+        click.echo(
+            f"Non-linear EM-ICP  {n_levels} level(s)"
+            f"  coarsest={coarsest_n} pts"
+            f"  iter={max_iter}×{icm_iter}"
+            + auto_note
         )
+
+    def_field = nonrigid_icp_multires(
+        mov_pts, mov_normals,
+        ref_pts, ref_normals,
+        mov_poly,
+        n_levels=n_levels,
+        target_n_coarsest=coarsest_n,
+        sigma=sigma,
+        beta=beta,
+        beta_coarse_factor=beta_coarse_factor,
+        dist_cutoff=dist_cutoff,
+        max_iter=max_iter,
+        icm_iter=icm_iter,
+        period_sigma=period_sigma,
+        sigma_min=sigma_min,
+        e_chunk=e_chunk,
+        verbose=verbose,
+    )
 
     warped = apply_deformation(mov_pts, def_field)
 

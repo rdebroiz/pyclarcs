@@ -169,18 +169,22 @@ def _step_nlregister(
         str(ref_path),
         str(out_path),
         "--deformation", str(def_path),
-        "--beta",         str(reg_kwargs["beta"]),
-        "--max-iter",     str(reg_kwargs["max_iter"]),
-        "--icm-iter",     str(reg_kwargs["icm_iter"]),
+        "--max-iter",    str(reg_kwargs["max_iter"]),
+        "--icm-iter",    str(reg_kwargs["icm_iter"]),
     ]
     # Only pass auto-estimable params when the user explicitly overrode them.
     if reg_kwargs["sigma"] is not None:
-        args += ["--sigma", str(reg_kwargs["sigma"])]
+        args += ["--sigma",        str(reg_kwargs["sigma"])]
     if reg_kwargs["dist_cutoff"] is not None:
-        args += ["--dist-cutoff", str(reg_kwargs["dist_cutoff"])]
+        args += ["--dist-cutoff",  str(reg_kwargs["dist_cutoff"])]
     if reg_kwargs["period_sigma"] is not None:
         args += ["--period-sigma", str(reg_kwargs["period_sigma"])]
-    args += ["--n-levels",          str(reg_kwargs["n_levels"])]
+    if reg_kwargs["beta"] is not None:
+        args += ["--beta",         str(reg_kwargs["beta"])]
+    if reg_kwargs["sigma_min"] is not None:
+        args += ["--sigma-min",    str(reg_kwargs["sigma_min"])]
+    if reg_kwargs["n_levels"] is not None:
+        args += ["--n-levels",     str(reg_kwargs["n_levels"])]
     args += ["--coarsest-n",        str(reg_kwargs["coarsest_n"])]
     args += ["--beta-coarse-factor", str(reg_kwargs["beta_coarse_factor"])]
     if not verbose:
@@ -246,28 +250,30 @@ def _print_summary(ref_path: Path, before_path: Path, registered_path: Path) -> 
 @click.option("--no-nlregister", is_flag=True,
               help="Stop after normalize (skip the EM-ICP step).")
 @click.option("--sigma",        default=None,  type=float,
-              help="Initial bandwidth [mm] (auto-estimated if omitted).")
-@click.option("--beta",         default=10.0,  show_default=True, type=float,
-              help="Regularisation weight (higher = smoother).")
+              help="Initial bandwidth [mm] (auto-estimated per level if omitted).")
+@click.option("--beta",         default=None,  type=float,
+              help="Regularisation weight (auto-estimated from mesh spacing if omitted).")
 @click.option("--dist-cutoff",  default=None,  type=float,
-              help="Search radius [mm] (auto-estimated if omitted).")
+              help="Search radius [mm] (auto-estimated per level if omitted).")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
 @click.option("--icm-iter",     default=50,    show_default=True, type=int,
               help="Max conjugate gradient iterations per outer iteration.")
 @click.option("--period-sigma", default=None,  type=int,
               help="Halve sigma every N iterations (auto-estimated if omitted).")
-@click.option("--n-levels",          default=3,    show_default=True, type=int,
-              help="Resolution levels for multi-res registration (1 = single-res).")
+@click.option("--sigma-min",    default=None,  type=float,
+              help="Minimum sigma / annealing floor (auto-estimated from mesh spacing if omitted).")
+@click.option("--n-levels",          default=None, type=int,
+              help="Resolution levels (auto from surface size if omitted; 1=single-res).")
 @click.option("--coarsest-n",        default=2000, show_default=True, type=int,
               help="Target vertices at the coarsest level.")
 @click.option("--beta-coarse-factor", default=1.0, show_default=True, type=float,
-              help="Per-level beta multiplier toward coarser levels (multi-res only).")
+              help="Per-level beta multiplier toward coarser levels (only when --beta is set).")
 @click.option("-q", "--quiet",  is_flag=True, help="Suppress all output.")
 def main(
     output_dir, pairs, no_nlregister,
     sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
-    n_levels, coarsest_n, beta_coarse_factor,
+    sigma_min, n_levels, coarsest_n, beta_coarse_factor,
     quiet,
 ):
     """Run the clarcs pipeline (symplane → recenter → normalize → nlregister).
@@ -283,6 +289,7 @@ def main(
     reg_kwargs = {
         "sigma":              sigma,
         "beta":               beta,
+        "sigma_min":          sigma_min,
         "beta_coarse_factor": beta_coarse_factor,
         "dist_cutoff":        dist_cutoff,
         "max_iter":           max_iter,
