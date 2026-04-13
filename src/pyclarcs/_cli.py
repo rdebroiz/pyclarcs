@@ -353,14 +353,17 @@ def normalize(input_path, output_path, target, quiet):
               help="Minimum sigma (annealing floor).")
 @click.option("--e-chunk",      default=2000,  show_default=True, type=int,
               help="Vertices per KDTree batch in the E-step (lower = less RAM).")
-@click.option("--n-levels",     default=3,     show_default=True, type=int,
+@click.option("--n-levels",          default=3,    show_default=True, type=int,
               help="Number of resolution levels (1 = single-res, ≥2 = multi-res).")
-@click.option("--coarsest-n",   default=2000,  show_default=True, type=int,
+@click.option("--coarsest-n",        default=2000, show_default=True, type=int,
               help="Target vertex count at the coarsest level (multi-res only).")
+@click.option("--beta-coarse-factor", default=3.0, show_default=True, type=float,
+              help="Per-level beta multiplier toward coarser levels (multi-res only). "
+                   "beta at level idx = beta × factor^idx (idx=0: finest).")
 @_verbose_option
 def nlregister(input_path, ref_path, output_path, deformation,
                sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
-               sigma_min, e_chunk, n_levels, coarsest_n, quiet):
+               sigma_min, e_chunk, n_levels, coarsest_n, beta_coarse_factor, quiet):
     """Non-linearly register INPUT onto REF using EM-ICP.
 
     Outputs the warped INPUT surface.  Optionally saves the per-vertex
@@ -411,6 +414,7 @@ def nlregister(input_path, ref_path, output_path, deformation,
             target_n_coarsest=coarsest_n,
             sigma=sigma,
             beta=beta,
+            beta_coarse_factor=beta_coarse_factor,
             dist_cutoff=dist_cutoff,
             max_iter=max_iter,
             icm_iter=icm_iter,

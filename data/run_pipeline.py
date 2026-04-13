@@ -180,8 +180,9 @@ def _step_nlregister(
         args += ["--dist-cutoff", str(reg_kwargs["dist_cutoff"])]
     if reg_kwargs["period_sigma"] is not None:
         args += ["--period-sigma", str(reg_kwargs["period_sigma"])]
-    args += ["--n-levels",   str(reg_kwargs["n_levels"])]
-    args += ["--coarsest-n", str(reg_kwargs["coarsest_n"])]
+    args += ["--n-levels",          str(reg_kwargs["n_levels"])]
+    args += ["--coarsest-n",        str(reg_kwargs["coarsest_n"])]
+    args += ["--beta-coarse-factor", str(reg_kwargs["beta_coarse_factor"])]
     if not verbose:
         args.append("-q")
 
@@ -256,15 +257,17 @@ def _print_summary(ref_path: Path, before_path: Path, registered_path: Path) -> 
               help="Max conjugate gradient iterations per outer iteration.")
 @click.option("--period-sigma", default=None,  type=int,
               help="Halve sigma every N iterations (auto-estimated if omitted).")
-@click.option("--n-levels",    default=3,     show_default=True, type=int,
+@click.option("--n-levels",          default=3,    show_default=True, type=int,
               help="Resolution levels for multi-res registration (1 = single-res).")
-@click.option("--coarsest-n",  default=2000,  show_default=True, type=int,
+@click.option("--coarsest-n",        default=2000, show_default=True, type=int,
               help="Target vertices at the coarsest level.")
+@click.option("--beta-coarse-factor", default=3.0, show_default=True, type=float,
+              help="Per-level beta multiplier toward coarser levels (multi-res only).")
 @click.option("-q", "--quiet",  is_flag=True, help="Suppress all output.")
 def main(
     output_dir, pairs, no_nlregister,
     sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
-    n_levels, coarsest_n,
+    n_levels, coarsest_n, beta_coarse_factor,
     quiet,
 ):
     """Run the clarcs pipeline (symplane → recenter → normalize → nlregister).
@@ -278,14 +281,15 @@ def main(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     reg_kwargs = {
-        "sigma":        sigma,
-        "beta":         beta,
-        "dist_cutoff":  dist_cutoff,
-        "max_iter":     max_iter,
-        "icm_iter":     icm_iter,
-        "period_sigma": period_sigma,
-        "n_levels":     n_levels,
-        "coarsest_n":   coarsest_n,
+        "sigma":              sigma,
+        "beta":               beta,
+        "beta_coarse_factor": beta_coarse_factor,
+        "dist_cutoff":        dist_cutoff,
+        "max_iter":           max_iter,
+        "icm_iter":           icm_iter,
+        "period_sigma":       period_sigma,
+        "n_levels":           n_levels,
+        "coarsest_n":         coarsest_n,
     }
 
     t_global = time.perf_counter()

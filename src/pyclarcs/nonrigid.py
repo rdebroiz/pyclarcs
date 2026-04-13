@@ -423,6 +423,7 @@ def nonrigid_icp_multires(
     target_n_coarsest: int = 2000,
     sigma: float | None = None,
     beta: float = 10.0,
+    beta_coarse_factor: float = 3.0,
     dist_cutoff: float | None = None,
     max_iter: int = 80,
     icm_iter: int = 50,
@@ -470,7 +471,18 @@ def nonrigid_icp_multires(
     sigma, dist_cutoff, period_sigma : float or None
         Override the auto-estimated values at every level.
     beta : float
-        Regularisation weight (same at all levels).
+        Regularisation weight at the **finest** level.
+    beta_coarse_factor : float
+        Multiplier applied to beta at each coarser level.  With the
+        default value of 3.0 and three levels the schedule is:
+
+          finest (idx=0)       : beta × 3⁰ = beta
+          intermediate (idx=1) : beta × 3¹ = beta × 3
+          coarsest (idx=2)     : beta × 3² = beta × 9
+
+        Higher values at coarse levels enforce smoother global
+        deformations; the user-specified *beta* controls local detail
+        at the finest level.  Set to 1.0 to use the same beta everywhere.
     max_iter : int
         Outer iterations at the **finest** level.  Each coarser level
         uses ``max_iter`` iterations as well (coarse levels are cheap).
@@ -545,11 +557,16 @@ def nonrigid_icp_multires(
         # captured the large-scale deformation.
         max_iter_l = (max_iter // 2) if is_finest and n_actual > 1 else max_iter
 
+        # β increases geometrically toward coarser levels so that the
+        # coarse stages enforce smooth global deformations while the
+        # fine stage is free to capture local anatomical detail.
+        beta_l = beta * (beta_coarse_factor ** idx)
+
         if verbose:
             label = "finest" if is_finest else f"level {idx}"
             print(
                 f"\n  [multires] {label}  {N_l} vertices"
-                f"  {max_iter_l} outer iterations"
+                f"  {max_iter_l} outer iterations  β={beta_l:.1f}"
             )
 
         # Auto-estimate params from current residual
@@ -578,7 +595,7 @@ def nonrigid_icp_multires(
             adj_l,
             init_def_field=init_l,
             sigma=sigma_l,
-            beta=beta,
+            beta=beta_l,
             dist_cutoff=cutoff_l,
             max_iter=max_iter_l,
             icm_iter=icm_iter,
