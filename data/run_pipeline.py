@@ -246,7 +246,7 @@ def _print_summary(ref_path: Path, before_path: Path, registered_path: Path) -> 
               help="Stop after normalize (skip the EM-ICP step).")
 @click.option("--sigma",        default=None,  type=float,
               help="Initial bandwidth [mm] (auto-estimated if omitted).")
-@click.option("--beta",         default=100.0, show_default=True, type=float,
+@click.option("--beta",         default=10.0,  show_default=True, type=float,
               help="Regularisation weight (higher = smoother).")
 @click.option("--dist-cutoff",  default=None,  type=float,
               help="Search radius [mm] (auto-estimated if omitted).")

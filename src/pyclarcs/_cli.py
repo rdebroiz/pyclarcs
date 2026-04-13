@@ -339,7 +339,7 @@ def normalize(input_path, output_path, target, quiet):
               help="Also save the deformation field to this VTK file.")
 @click.option("--sigma",        default=None,  type=float,
               help="Initial bandwidth [mm]. Auto-estimated from surfaces if omitted.")
-@click.option("--beta",         default=100.0, show_default=True, type=float,
+@click.option("--beta",         default=10.0,  show_default=True, type=float,
               help="Regularisation weight (higher = smoother).")
 @click.option("--dist-cutoff",  default=None,  type=float,
               help="Search radius [mm]. Auto-estimated from surfaces if omitted.")

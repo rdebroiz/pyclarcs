@@ -60,7 +60,7 @@ Annealing
 
 DEFAULT PARAMETERS (matching the original C++ NonLinearRegistration)
   sigma        = 3.0    initial bandwidth (same units as coordinates)
-  beta         = 100.0  regularisation weight
+  beta         = 10.0   regularisation weight
   dist_cutoff  = 15.0   search radius
   max_iter     = 80
   icm_iter     = 50     max CG iterations per outer iteration
@@ -161,7 +161,7 @@ def nonrigid_icp(
     *,
     init_def_field: np.ndarray | None = None,
     sigma: float = 3.0,
-    beta: float = 100.0,
+    beta: float = 10.0,
     dist_cutoff: float = 15.0,
     max_iter: int = 80,
     icm_iter: int = 50,
@@ -422,7 +422,7 @@ def nonrigid_icp_multires(
     n_levels: int = 3,
     target_n_coarsest: int = 2000,
     sigma: float | None = None,
-    beta: float = 100.0,
+    beta: float = 10.0,
     dist_cutoff: float | None = None,
     max_iter: int = 80,
     icm_iter: int = 50,
