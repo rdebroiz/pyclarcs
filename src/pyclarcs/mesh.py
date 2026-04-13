@@ -25,8 +25,108 @@ from scipy.sparse import csr_matrix
 
 
 # ---------------------------------------------------------------------------
+# Internal VTK helpers
+# ---------------------------------------------------------------------------
+
+def _to_polydata(points: np.ndarray, faces: list[list[int]]):
+    """Build a vtkPolyData from numpy arrays (lazy VTK import)."""
+    import vtk
+    from vtk.util.numpy_support import numpy_to_vtk
+
+    vtk_pts = vtk.vtkPoints()
+    vtk_pts.SetData(numpy_to_vtk(points.astype("float32"), deep=True))
+    cells = vtk.vtkCellArray()
+    for face in faces:
+        cells.InsertNextCell(len(face))
+        for idx in face:
+            cells.InsertCellPoint(idx)
+    poly = vtk.vtkPolyData()
+    poly.SetPoints(vtk_pts)
+    poly.SetPolys(cells)
+    return poly
+
+
+def _from_polydata(poly) -> tuple[np.ndarray, list[list[int]]]:
+    """Extract (points, faces) from a vtkPolyData."""
+    import vtk
+    from vtk.util.numpy_support import vtk_to_numpy
+
+    pts = vtk_to_numpy(poly.GetPoints().GetData()).astype(float)
+    faces: list[list[int]] = []
+    poly.GetPolys().InitTraversal()
+    id_list = vtk.vtkIdList()
+    while poly.GetPolys().GetNextCell(id_list):
+        faces.append([id_list.GetId(i) for i in range(id_list.GetNumberOfIds())])
+    return pts, faces
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def decimate_surface(
+    points: np.ndarray,
+    faces: list[list[int]],
+    target_n: int,
+) -> tuple[np.ndarray, list[list[int]]]:
+    """Decimate a mesh to approximately *target_n* vertices.
+
+    Uses ``vtkQuadricDecimation`` which reliably achieves high reduction
+    ratios (unlike ``vtkDecimatePro`` with topology preservation, which
+    stalls on complex meshes like brain surfaces).
+
+    Parameters
+    ----------
+    points : ndarray (N, 3)
+    faces  : list of face index lists
+    target_n : int
+        Desired number of vertices in the output mesh.
+
+    Returns
+    -------
+    (points, faces) of the decimated mesh.
+        The vertex count may differ slightly from *target_n* due to
+        topological constraints.
+    """
+    import vtk
+
+    reduction = max(0.0, min(0.99, 1.0 - target_n / len(points)))
+    deci = vtk.vtkQuadricDecimation()
+    deci.SetInputData(_to_polydata(points, faces))
+    deci.SetTargetReduction(reduction)
+    deci.Update()
+    return _from_polydata(deci.GetOutput())
+
+
+def compute_vertex_normals(
+    points: np.ndarray,
+    faces: list[list[int]],
+) -> np.ndarray:
+    """Compute smooth per-vertex normals using VTK.
+
+    Parameters
+    ----------
+    points : ndarray (N, 3)
+    faces  : list of face index lists
+
+    Returns
+    -------
+    normals : ndarray (N, 3)
+        Unit outward normals at each vertex.
+    """
+    import vtk
+    from vtk.util.numpy_support import vtk_to_numpy
+
+    nf = vtk.vtkPolyDataNormals()
+    nf.SetInputData(_to_polydata(points, faces))
+    nf.ComputePointNormalsOn()
+    nf.ComputeCellNormalsOff()
+    nf.SplittingOff()   # preserve point count — no edge splitting
+    nf.Update()
+    return vtk_to_numpy(
+        nf.GetOutput().GetPointData().GetNormals()
+    ).astype(float)
 
 def mesh_adjacency(
     polygons: list[list[int]],
