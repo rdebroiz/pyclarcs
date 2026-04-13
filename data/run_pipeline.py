@@ -197,22 +197,30 @@ def _step_nlregister(
     return out_path
 
 
-def _rms_distance(pts_a: np.ndarray, pts_b: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(np.sum((pts_a - pts_b) ** 2, axis=1))))
+def _rms_nn_distance(pts_a: np.ndarray, pts_b: np.ndarray) -> float:
+    """RMS nearest-neighbour distance from pts_a to pts_b."""
+    from scipy.spatial import KDTree
+    dists, _ = KDTree(pts_b).query(pts_a, k=1, workers=-1)
+    return float(np.sqrt(np.mean(dists ** 2)))
 
 
-def _print_summary(ref_path: Path, target_path: Path, registered_path: Path) -> None:
+def _print_summary(ref_path: Path, before_path: Path, registered_path: Path) -> None:
+    """Print NN-distance RMS before/after registration.
+
+    Uses nearest-neighbour distances so the metric is valid even when
+    the reference and target meshes have different vertex counts or
+    orderings (which is the usual case for inter-subject surfaces).
+    """
     from pyclarcs.io import load_surface
 
-    ref_pts, _ = load_surface(str(ref_path))
-    tgt_pts, _ = load_surface(str(target_path))
-    reg_pts, _ = load_surface(str(registered_path))
+    ref_pts,  _ = load_surface(str(ref_path))
+    bef_pts,  _ = load_surface(str(before_path))
+    reg_pts,  _ = load_surface(str(registered_path))
 
-    n = min(len(ref_pts), len(tgt_pts), len(reg_pts))
-    before = _rms_distance(ref_pts[:n], tgt_pts[:n])
-    after  = _rms_distance(ref_pts[:n], reg_pts[:n])
+    before = _rms_nn_distance(bef_pts, ref_pts)
+    after  = _rms_nn_distance(reg_pts, ref_pts)
     click.echo(
-        f"  RMS before: {before:.2f} mm   after: {after:.2f} mm"
+        f"  RMS NN before: {before:.2f} mm   after: {after:.2f} mm"
         f"   improvement: {(before - after) / before * 100:.1f} %"
     )
 
@@ -321,7 +329,7 @@ def main(
             registered = _step_nlregister(
                 tgt_normalized, ref_recentered, output_dir, reg_kwargs, verbose
             )
-            _print_summary(ref_recentered, tgt_recentered, registered)
+            _print_summary(ref_recentered, tgt_normalized, registered)
 
     elapsed_total = time.perf_counter() - t_global
     click.echo(f"\nTotal time: {elapsed_total:.1f} s")

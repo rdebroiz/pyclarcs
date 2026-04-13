@@ -389,25 +389,11 @@ def nlregister(input_path, ref_path, output_path, deformation,
     if verbose:
         click.echo(f"  {len(ref_pts)} points")
 
-    if sigma is None or dist_cutoff is None or period_sigma is None:
-        from pyclarcs.nonrigid import estimate_registration_params
-        auto = estimate_registration_params(
-            mov_pts, ref_pts,
-            max_iter=max_iter, sigma_min=sigma_min,
-        )
-        if sigma is None:
-            sigma = auto["sigma"]
-        if dist_cutoff is None:
-            dist_cutoff = auto["dist_cutoff"]
-        if period_sigma is None:
-            period_sigma = auto["period_sigma"]
-        if verbose:
-            click.echo(
-                f"Auto params:  σ={sigma}  r={dist_cutoff}"
-                f"  period_σ={period_sigma}"
-            )
-
     if n_levels > 1:
+        # Multi-res: pass CLI values (possibly None) directly so that
+        # nonrigid_icp_multires can re-estimate params per level from the
+        # current residual.  Pre-estimating here would freeze sigma at its
+        # initial value and prevent per-level adaptation.
         from pyclarcs.nonrigid import nonrigid_icp_multires
         if verbose:
             click.echo(
@@ -415,6 +401,8 @@ def nlregister(input_path, ref_path, output_path, deformation,
                 f"  coarsest={coarsest_n} pts"
                 f"  β={beta}  iter={max_iter}×{icm_iter}"
             )
+            if sigma is None or dist_cutoff is None or period_sigma is None:
+                click.echo("  σ / r / period_σ: auto-estimated per level from residual")
         def_field = nonrigid_icp_multires(
             mov_pts, mov_normals,
             ref_pts, ref_normals,
@@ -432,6 +420,24 @@ def nlregister(input_path, ref_path, output_path, deformation,
             verbose=verbose,
         )
     else:
+        # Single-res: auto-estimate once from the full surfaces.
+        if sigma is None or dist_cutoff is None or period_sigma is None:
+            from pyclarcs.nonrigid import estimate_registration_params
+            auto = estimate_registration_params(
+                mov_pts, ref_pts,
+                max_iter=max_iter, sigma_min=sigma_min,
+            )
+            if sigma is None:
+                sigma = auto["sigma"]
+            if dist_cutoff is None:
+                dist_cutoff = auto["dist_cutoff"]
+            if period_sigma is None:
+                period_sigma = auto["period_sigma"]
+            if verbose:
+                click.echo(
+                    f"Auto params:  σ={sigma}  r={dist_cutoff}"
+                    f"  period_σ={period_sigma}"
+                )
         if verbose:
             click.echo("Building mesh adjacency…")
         adj = adjacency_csr(mov_poly, len(mov_pts))
