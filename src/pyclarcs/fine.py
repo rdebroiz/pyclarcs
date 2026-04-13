@@ -81,7 +81,7 @@ def _e_step(
     flat_weights : float64 (K,)  — normalised weights
     row_sums     : float64 (M,)  — unnormalised row sums
     """
-    radius = nu_max * sigma_sq
+    radius = np.sqrt(2.0 * nu_max * sigma_sq)
     reflected = np.ascontiguousarray(plane.apply(work_pts), dtype=np.float64)
     neighbour_ids = model_tree.query_ball_point(reflected, radius, workers=-1)
     flat_nbrs, offsets = nbrs_to_csr(neighbour_ids)
