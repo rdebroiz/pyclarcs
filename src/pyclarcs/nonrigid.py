@@ -44,13 +44,16 @@ E-step — doubly-stochastic fuzzy correspondences
   (rows, cols, weights).  Row/col sums and barycentres are then computed
   with numpy bincount — no N×M sparse matrix is ever constructed.
 
-M-step — Jacobi ICM (icm_iter inner iterations)
-  For each i:
-      d_i ← ( W_i (ȳ_i − x_i)  +  β Σ_{j ∈ N_i} d_j )
-              / ( β |N_i| + W_i )
+M-step — preconditioned conjugate gradient
+  Solves the sparse linear system  M · d[:,k] = b[:,k]  independently
+  for each coordinate k ∈ {0, 1, 2}:
 
-  Points with no correspondences (W_i = 0) are interpolated from
-  their mesh neighbours:   d_i ← (Σ_{j ∈ N_i} d_j) / |N_i|.
+      M   =  diag(W_i + β·|N_i|)  −  β · A          (symmetric PSD)
+      b_i =  W_i · (ȳ_i − x_i)_k
+
+  Preconditioning with the diagonal of M (Jacobi preconditioner) gives
+  O(√κ) convergence vs. O(κ) for unaccelerated Jacobi.  The previous
+  outer-iteration solution warm-starts the solve.
 
 Annealing
   σ ← max(σ / 2,  σ_min)   every `period_sigma` outer iterations.
@@ -60,7 +63,7 @@ DEFAULT PARAMETERS (matching the original C++ NonLinearRegistration)
   beta         = 100.0  regularisation weight
   dist_cutoff  = 15.0   search radius
   max_iter     = 80
-  icm_iter     = 120    inner Jacobi steps per outer iteration
+  icm_iter     = 50     max CG iterations per outer iteration
   period_sigma = 40     sigma halved every 40 outer iterations
   sigma_min    = 0.1
   e_chunk      = 2000   vertices per KDTree query batch
@@ -72,7 +75,8 @@ import math
 
 import numpy as np
 from scipy.spatial import KDTree
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, diags as sp_diags
+from scipy.sparse.linalg import cg as sp_cg
 
 
 # ---------------------------------------------------------------------------
@@ -155,11 +159,12 @@ def nonrigid_icp(
     ref_normals: np.ndarray,
     adjacency: csr_matrix,
     *,
+    init_def_field: np.ndarray | None = None,
     sigma: float = 3.0,
     beta: float = 100.0,
     dist_cutoff: float = 15.0,
     max_iter: int = 80,
-    icm_iter: int = 120,
+    icm_iter: int = 50,
     period_sigma: int = 40,
     sigma_min: float = 0.1,
     e_chunk: int = 2000,
@@ -170,7 +175,7 @@ def nonrigid_icp(
     The algorithm iterates between:
       - computing doubly-stochastic fuzzy correspondences (E-step), and
       - solving for the deformation field with Laplacian regularisation
-        via Jacobi ICM (M-step).
+        via preconditioned conjugate gradient (M-step).
 
     Parameters
     ----------
@@ -184,6 +189,10 @@ def nonrigid_icp(
         Unit normals at each reference vertex.
     adjacency : csr_matrix (N, N)
         Symmetric mesh adjacency matrix (from ``mesh.adjacency_csr``).
+    init_def_field : ndarray (N, 3) or None
+        Initial deformation field.  None initialises to zero (default).
+        Used by ``nonrigid_icp_multires`` to warm-start the finest level
+        from the interpolated coarse solution.
     sigma : float
         Initial bandwidth of the exponential correspondence kernel.
         Should be on the order of the expected initial surface-to-surface
@@ -195,7 +204,7 @@ def nonrigid_icp(
     max_iter : int
         Number of outer EM iterations.
     icm_iter : int
-        Number of Jacobi ICM steps per outer iteration.
+        Maximum number of conjugate gradient iterations per outer iteration.
     period_sigma : int
         Number of outer iterations between each halving of sigma.
     sigma_min : float
@@ -220,7 +229,10 @@ def nonrigid_icp(
     N = len(mov_pts)
     M = len(ref_pts)
 
-    def_field = np.zeros((N, 3), dtype=float)
+    if init_def_field is not None:
+        def_field = np.asarray(init_def_field, dtype=float).copy()
+    else:
+        def_field = np.zeros((N, 3), dtype=float)
 
     # Precompute adjacency statistics (fixed throughout)
     neigh_count = np.asarray(adjacency.sum(axis=1), dtype=float).ravel()  # (N,)
@@ -299,25 +311,32 @@ def nonrigid_icp(
         corresBary[inlier_mask] /= weight_out[inlier_mask, np.newaxis]
 
         # ------------------------------------------------------------
-        # M-step: Jacobi ICM
+        # M-step: preconditioned conjugate gradient
         # Minimises:  Σ_i W_i ‖x_i + d_i − ȳ_i‖²
         #           + β Σ_{(i,j)∈edges} ‖d_i − d_j‖²
-        # Closed-form per-node update (Jacobi):
-        #   d_i ← (W_i (ȳ_i − x_i) + β Σ_{j∈N_i} d_j) / (β|N_i| + W_i)
+        # Equivalent to solving the symmetric PSD system:
+        #   M · d[:,k] = b[:,k]   for k ∈ {0, 1, 2}
+        # where
+        #   M   = diag(W_i + β·|N_i|)  −  β · adjacency
+        #   b_i = W_i · (ȳ_i − x_i)_k
+        # Jacobi preconditioner M_inv = diag(1 / diag(M)).
+        # Each coordinate is solved independently; the previous d warm-starts.
         # ------------------------------------------------------------
         target_offset = corresBary - mov_pts  # (N, 3)
 
-        for _ in range(icm_iter):
-            neigh_sum = adjacency @ def_field                   # (N, 3)
-            denom = beta * neigh_count + weight_out             # (N,)
-            valid_denom = denom > 0.0
+        diag_vals = weight_out + beta * neigh_count          # (N,)
+        M_mat  = sp_diags(diag_vals) - beta * adjacency     # (N, N) PSD
+        M_prec = sp_diags(1.0 / np.maximum(diag_vals, 1e-10))  # Jacobi precond
+        rhs    = weight_out[:, np.newaxis] * target_offset  # (N, 3)
 
-            new_field = def_field.copy()
-            new_field[valid_denom] = (
-                weight_out[valid_denom, np.newaxis] * target_offset[valid_denom]
-                + beta * neigh_sum[valid_denom]
-            ) / denom[valid_denom, np.newaxis]
-            def_field = new_field
+        for k in range(3):
+            def_field[:, k], _ = sp_cg(
+                M_mat, rhs[:, k],
+                x0=def_field[:, k],
+                M=M_prec,
+                rtol=1e-5,
+                maxiter=icm_iter,
+            )
 
         # ------------------------------------------------------------
         # Annealing: halve sigma every period_sigma iterations
@@ -334,6 +353,245 @@ def nonrigid_icp(
             )
 
     return def_field
+
+
+# ---------------------------------------------------------------------------
+# Multi-resolution helpers
+# ---------------------------------------------------------------------------
+
+def _interpolate_field(
+    field_coarse: np.ndarray,
+    pts_coarse: np.ndarray,
+    pts_fine: np.ndarray,
+    k: int = 4,
+) -> np.ndarray:
+    """Inverse-distance weighted interpolation of a deformation field.
+
+    For each vertex in *pts_fine*, locates the *k* nearest vertices in
+    *pts_coarse* and computes a weighted average of their deformation
+    vectors.  Weights are proportional to 1/distance, giving exact
+    transfer when a fine vertex coincides with a coarse vertex.
+
+    Parameters
+    ----------
+    field_coarse : ndarray (N_c, 3)
+    pts_coarse   : ndarray (N_c, 3)
+    pts_fine     : ndarray (N_f, 3)
+    k            : int — number of neighbours (4 is typically sufficient)
+
+    Returns
+    -------
+    ndarray (N_f, 3)
+    """
+    dists, idxs = KDTree(pts_coarse).query(pts_fine, k=k, workers=-1)
+    w = 1.0 / np.maximum(dists, 1e-10)   # (N_f, k)
+    w /= w.sum(axis=1, keepdims=True)
+    # einsum: for each fine vertex sum  w[i,k] * field_coarse[idxs[i,k]]
+    return np.einsum("nk,nkd->nd", w, field_coarse[idxs])
+
+
+def _build_level(
+    pts: np.ndarray,
+    faces: list,
+    target_n: int,
+) -> tuple[np.ndarray, np.ndarray, list, csr_matrix]:
+    """Decimate *pts/faces* to *target_n* vertices and build adjacency.
+
+    Returns
+    -------
+    (pts_l, normals_l, faces_l, adjacency_l)
+    """
+    from pyclarcs.mesh import decimate_surface, compute_vertex_normals, adjacency_csr
+    d_pts, d_faces = decimate_surface(pts, faces, target_n)
+    d_normals = compute_vertex_normals(d_pts, d_faces)
+    d_adj = adjacency_csr(d_faces, len(d_pts))
+    return d_pts, d_normals, d_faces, d_adj
+
+
+# ---------------------------------------------------------------------------
+# Multi-resolution registration
+# ---------------------------------------------------------------------------
+
+def nonrigid_icp_multires(
+    mov_pts: np.ndarray,
+    mov_normals: np.ndarray,
+    ref_pts: np.ndarray,
+    ref_normals: np.ndarray,
+    mov_polygons: list,
+    *,
+    n_levels: int = 3,
+    target_n_coarsest: int = 2000,
+    sigma: float | None = None,
+    beta: float = 100.0,
+    dist_cutoff: float | None = None,
+    max_iter: int = 80,
+    icm_iter: int = 50,
+    period_sigma: int | None = None,
+    sigma_min: float = 0.1,
+    e_chunk: int = 2000,
+    verbose: bool = True,
+) -> np.ndarray:
+    """Multi-resolution non-rigid EM-ICP surface registration.
+
+    Builds a hierarchy of *n_levels* progressively decimated copies of the
+    moving surface (always decimated from the original, not recursively).
+    Registration runs from the coarsest level to the finest:
+
+      coarsest (target_n_coarsest pts)
+          → run nonrigid_icp  (max_iter iterations)
+          → interpolate deformation field to next finer mesh (IDW, k=4)
+      …
+      finest (original mesh, len(mov_pts) pts)
+          → run nonrigid_icp  (max_iter // 2 iterations, warm-started)
+
+    At each level the KDTree is always queried against the **full-resolution
+    reference**, so the hierarchy only affects the moving surface.
+
+    Sigma, dist_cutoff and period_sigma are re-estimated at each level from
+    the current residual (transformed minus reference) unless explicit values
+    are provided.  Because the residual decreases as the hierarchy progresses,
+    the kernel automatically narrows at finer scales.
+
+    Parameters
+    ----------
+    mov_pts : ndarray (N, 3)
+    mov_normals : ndarray (N, 3)
+    ref_pts : ndarray (M, 3)
+    ref_normals : ndarray (M, 3)
+    mov_polygons : list of face index lists
+        Polygon connectivity of the moving surface (needed for decimation
+        and adjacency construction at each level).
+    n_levels : int
+        Number of resolution levels including the finest.  With
+        ``n_levels=1`` the method is identical to ``nonrigid_icp``.
+    target_n_coarsest : int
+        Target vertex count at the coarsest level.  Intermediate levels
+        are placed geometrically between this value and ``len(mov_pts)``.
+    sigma, dist_cutoff, period_sigma : float or None
+        Override the auto-estimated values at every level.
+    beta : float
+        Regularisation weight (same at all levels).
+    max_iter : int
+        Outer iterations at the **finest** level.  Each coarser level
+        uses ``max_iter`` iterations as well (coarse levels are cheap).
+    icm_iter : int
+        Maximum CG iterations per outer iteration (same at all levels).
+    sigma_min : float
+        Annealing floor (same at all levels).
+    e_chunk : int
+        KDTree batch size (same at all levels).
+    verbose : bool
+
+    Returns
+    -------
+    def_field : ndarray (N, 3)
+        Per-vertex deformation field at the finest (original) resolution.
+        The warped surface is ``mov_pts + def_field``.
+    """
+    from pyclarcs.mesh import adjacency_csr
+
+    mov_pts     = np.asarray(mov_pts,     dtype=float)
+    mov_normals = np.asarray(mov_normals, dtype=float)
+    ref_pts     = np.asarray(ref_pts,     dtype=float)
+    ref_normals = np.asarray(ref_normals, dtype=float)
+
+    N = len(mov_pts)
+
+    # ------------------------------------------------------------------
+    # Build hierarchy: level 0 = finest (original), level L-1 = coarsest
+    # ------------------------------------------------------------------
+    adj_finest = adjacency_csr(mov_polygons, N)
+    # Each entry: (pts, normals, faces, adjacency)
+    hierarchy = [(mov_pts, mov_normals, mov_polygons, adj_finest)]
+
+    for lev in range(1, n_levels):
+        # Geometrically-spaced target size in log space
+        t = lev / (n_levels - 1) if n_levels > 1 else 1.0
+        target_n = max(
+            target_n_coarsest,
+            int(N * (target_n_coarsest / N) ** t),
+        )
+        if target_n >= len(hierarchy[0][0]) * 0.85:
+            if verbose:
+                print(
+                    f"  [multires] level {lev}: target {target_n} too close "
+                    f"to finest ({N}), stopping hierarchy here."
+                )
+            break
+        if verbose:
+            print(f"  [multires] building level {lev}: {N} → ~{target_n} vertices…")
+        hierarchy.append(_build_level(mov_pts, mov_polygons, target_n))
+
+    n_actual = len(hierarchy)
+
+    # ------------------------------------------------------------------
+    # Register coarsest → finest
+    # ------------------------------------------------------------------
+    def_field_prev: np.ndarray | None = None   # result from coarser level
+    pts_prev: np.ndarray | None       = None
+
+    for idx in range(n_actual - 1, -1, -1):
+        pts_l, normals_l, _, adj_l = hierarchy[idx]
+        N_l = len(pts_l)
+        is_finest = (idx == 0)
+
+        # Warm-start from interpolated coarser field
+        if def_field_prev is None:
+            init_l = None
+        else:
+            init_l = _interpolate_field(def_field_prev, pts_prev, pts_l)
+
+        # Fewer iterations at the finest level: the coarse levels already
+        # captured the large-scale deformation.
+        max_iter_l = (max_iter // 2) if is_finest and n_actual > 1 else max_iter
+
+        if verbose:
+            label = "finest" if is_finest else f"level {idx}"
+            print(
+                f"\n  [multires] {label}  {N_l} vertices"
+                f"  {max_iter_l} outer iterations"
+            )
+
+        # Auto-estimate params from current residual
+        transformed_l = pts_l if init_l is None else pts_l + init_l
+        sigma_l       = sigma
+        cutoff_l      = dist_cutoff
+        period_l      = period_sigma
+
+        if sigma_l is None or cutoff_l is None or period_l is None:
+            auto = estimate_registration_params(
+                transformed_l, ref_pts,
+                max_iter=max_iter_l, sigma_min=sigma_min,
+            )
+            if sigma_l  is None: sigma_l  = auto["sigma"]
+            if cutoff_l is None: cutoff_l = auto["dist_cutoff"]
+            if period_l is None: period_l = auto["period_sigma"]
+            if verbose:
+                print(
+                    f"    auto params:  σ={sigma_l}  r={cutoff_l}"
+                    f"  period_σ={period_l}"
+                )
+
+        def_field_l = nonrigid_icp(
+            pts_l, normals_l,
+            ref_pts, ref_normals,
+            adj_l,
+            init_def_field=init_l,
+            sigma=sigma_l,
+            beta=beta,
+            dist_cutoff=cutoff_l,
+            max_iter=max_iter_l,
+            icm_iter=icm_iter,
+            period_sigma=period_l,
+            sigma_min=sigma_min,
+            e_chunk=e_chunk,
+            verbose=verbose,
+        )
+
+        def_field_prev = def_field_l
+        pts_prev       = pts_l
+
+    return def_field_prev  # finest-level result
 
 
 def apply_deformation(

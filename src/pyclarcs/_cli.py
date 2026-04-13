@@ -345,18 +345,22 @@ def normalize(input_path, output_path, target, quiet):
               help="Search radius [mm]. Auto-estimated from surfaces if omitted.")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
-@click.option("--icm-iter",     default=120,   show_default=True, type=int,
-              help="Number of Jacobi ICM steps per outer iteration.")
+@click.option("--icm-iter",     default=50,    show_default=True, type=int,
+              help="Max conjugate gradient iterations per outer iteration.")
 @click.option("--period-sigma", default=None,  type=int,
               help="Halve sigma every this many iterations. Auto-estimated if omitted.")
 @click.option("--sigma-min",    default=0.1,   show_default=True, type=float,
               help="Minimum sigma (annealing floor).")
 @click.option("--e-chunk",      default=2000,  show_default=True, type=int,
               help="Vertices per KDTree batch in the E-step (lower = less RAM).")
+@click.option("--n-levels",     default=3,     show_default=True, type=int,
+              help="Number of resolution levels (1 = single-res, ≥2 = multi-res).")
+@click.option("--coarsest-n",   default=2000,  show_default=True, type=int,
+              help="Target vertex count at the coarsest level (multi-res only).")
 @_verbose_option
 def nlregister(input_path, ref_path, output_path, deformation,
                sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
-               sigma_min, e_chunk, quiet):
+               sigma_min, e_chunk, n_levels, coarsest_n, quiet):
     """Non-linearly register INPUT onto REF using EM-ICP.
 
     Outputs the warped INPUT surface.  Optionally saves the per-vertex
@@ -403,30 +407,54 @@ def nlregister(input_path, ref_path, output_path, deformation,
                 f"  period_σ={period_sigma}"
             )
 
-    if verbose:
-        click.echo("Building mesh adjacency…")
-    adj = adjacency_csr(mov_poly, len(mov_pts))
-
-    if verbose:
-        click.echo(
-            f"Non-linear EM-ICP  "
-            f"σ={sigma}  β={beta}  r={dist_cutoff}  "
-            f"iter={max_iter}×{icm_iter}"
+    if n_levels > 1:
+        from pyclarcs.nonrigid import nonrigid_icp_multires
+        if verbose:
+            click.echo(
+                f"Non-linear EM-ICP  multi-res {n_levels} levels"
+                f"  coarsest={coarsest_n} pts"
+                f"  β={beta}  iter={max_iter}×{icm_iter}"
+            )
+        def_field = nonrigid_icp_multires(
+            mov_pts, mov_normals,
+            ref_pts, ref_normals,
+            mov_poly,
+            n_levels=n_levels,
+            target_n_coarsest=coarsest_n,
+            sigma=sigma,
+            beta=beta,
+            dist_cutoff=dist_cutoff,
+            max_iter=max_iter,
+            icm_iter=icm_iter,
+            period_sigma=period_sigma,
+            sigma_min=sigma_min,
+            e_chunk=e_chunk,
+            verbose=verbose,
         )
-    def_field = nonrigid_icp(
-        mov_pts, mov_normals,
-        ref_pts, ref_normals,
-        adj,
-        sigma=sigma,
-        beta=beta,
-        dist_cutoff=dist_cutoff,
-        max_iter=max_iter,
-        icm_iter=icm_iter,
-        period_sigma=period_sigma,
-        sigma_min=sigma_min,
-        e_chunk=e_chunk,
-        verbose=verbose,
-    )
+    else:
+        if verbose:
+            click.echo("Building mesh adjacency…")
+        adj = adjacency_csr(mov_poly, len(mov_pts))
+        if verbose:
+            click.echo(
+                f"Non-linear EM-ICP  "
+                f"σ={sigma}  β={beta}  r={dist_cutoff}  "
+                f"iter={max_iter}×{icm_iter}"
+            )
+        def_field = nonrigid_icp(
+            mov_pts, mov_normals,
+            ref_pts, ref_normals,
+            adj,
+            sigma=sigma,
+            beta=beta,
+            dist_cutoff=dist_cutoff,
+            max_iter=max_iter,
+            icm_iter=icm_iter,
+            period_sigma=period_sigma,
+            sigma_min=sigma_min,
+            e_chunk=e_chunk,
+            verbose=verbose,
+        )
 
     warped = apply_deformation(mov_pts, def_field)
 

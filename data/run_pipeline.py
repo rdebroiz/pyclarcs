@@ -180,6 +180,8 @@ def _step_nlregister(
         args += ["--dist-cutoff", str(reg_kwargs["dist_cutoff"])]
     if reg_kwargs["period_sigma"] is not None:
         args += ["--period-sigma", str(reg_kwargs["period_sigma"])]
+    args += ["--n-levels",   str(reg_kwargs["n_levels"])]
+    args += ["--coarsest-n", str(reg_kwargs["coarsest_n"])]
     if not verbose:
         args.append("-q")
 
@@ -242,14 +244,19 @@ def _print_summary(ref_path: Path, target_path: Path, registered_path: Path) -> 
               help="Search radius [mm] (auto-estimated if omitted).")
 @click.option("--max-iter",     default=80,    show_default=True, type=int,
               help="Number of outer EM iterations.")
-@click.option("--icm-iter",     default=120,   show_default=True, type=int,
-              help="Number of Jacobi ICM steps per outer iteration.")
+@click.option("--icm-iter",     default=50,    show_default=True, type=int,
+              help="Max conjugate gradient iterations per outer iteration.")
 @click.option("--period-sigma", default=None,  type=int,
               help="Halve sigma every N iterations (auto-estimated if omitted).")
+@click.option("--n-levels",    default=3,     show_default=True, type=int,
+              help="Resolution levels for multi-res registration (1 = single-res).")
+@click.option("--coarsest-n",  default=2000,  show_default=True, type=int,
+              help="Target vertices at the coarsest level.")
 @click.option("-q", "--quiet",  is_flag=True, help="Suppress all output.")
 def main(
     output_dir, pairs, no_nlregister,
     sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
+    n_levels, coarsest_n,
     quiet,
 ):
     """Run the clarcs pipeline (symplane → recenter → normalize → nlregister).
@@ -269,6 +276,8 @@ def main(
         "max_iter":     max_iter,
         "icm_iter":     icm_iter,
         "period_sigma": period_sigma,
+        "n_levels":     n_levels,
+        "coarsest_n":   coarsest_n,
     }
 
     t_global = time.perf_counter()
