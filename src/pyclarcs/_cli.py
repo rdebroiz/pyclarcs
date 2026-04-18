@@ -366,11 +366,21 @@ def normalize(input_path, output_path, target, quiet):
 @click.option("--normal-min-dot", default=0.0, show_default=True, type=float,
               help="Minimum dot-product of source/reference normals to accept a correspondence "
                    "(0=same hemisphere, 1=perfectly aligned).")
+@click.option("--no-symmetric",  is_flag=True, default=False,
+              help="Disable symmetric correspondences (A+B, Reg2). Enabled by default.")
+@click.option("--no-tgd",        is_flag=True, default=False,
+              help="Disable the TGD geodesic shape prior (Reg3). Enabled by default.")
+@click.option("--no-rkhs",       is_flag=True, default=False,
+              help="Disable RKHS Wu-kernel M-step; fall back to Laplacian M-step.")
+@click.option("--rkhs-lambda",   default=0.01, show_default=True, type=float,
+              help="RKHS regularisation weight (smaller = larger deformations).")
 @_verbose_option
 def nlregister(input_path, ref_path, output_path, deformation,
                sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
                sigma_min, e_chunk, n_levels, coarsest_n, beta_coarse_factor,
-               outlier_weight, normal_min_dot, quiet):
+               outlier_weight, normal_min_dot,
+               no_symmetric, no_tgd, no_rkhs, rkhs_lambda,
+               quiet):
     """Non-linearly register INPUT onto REF using EM-ICP.
 
     Outputs the warped INPUT surface.  Optionally saves the per-vertex
@@ -399,7 +409,9 @@ def nlregister(input_path, ref_path, output_path, deformation,
 
     if verbose:
         click.echo(f"Loading reference surface: {ref_path}")
-    ref_pts, _, ref_normals = load_surface_with_normals(ref_path)
+    from pyclarcs.io import load_surface
+    ref_pts, ref_poly = load_surface(ref_path)
+    _, _, ref_normals = load_surface_with_normals(ref_path)
     if verbose:
         click.echo(f"  {len(ref_pts)} points")
 
@@ -434,6 +446,7 @@ def nlregister(input_path, ref_path, output_path, deformation,
         mov_pts, mov_normals,
         ref_pts, ref_normals,
         mov_poly,
+        ref_poly,
         n_levels=n_levels,
         target_n_coarsest=coarsest_n,
         sigma=sigma,
@@ -447,6 +460,10 @@ def nlregister(input_path, ref_path, output_path, deformation,
         outlier_weight=outlier_weight,
         normal_min_dot=normal_min_dot,
         e_chunk=e_chunk,
+        symmetric=not no_symmetric,
+        use_tgd=not no_tgd,
+        use_rkhs=not no_rkhs,
+        rkhs_lambda=rkhs_lambda,
         verbose=verbose,
     )
 
