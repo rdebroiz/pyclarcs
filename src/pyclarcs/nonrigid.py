@@ -205,7 +205,7 @@ def estimate_registration_params(
     # (~1.5× mesh spacing), which causes the algorithm to lock onto wrong
     # correspondences early and converge to a local minimum.
     sigma = float(np.percentile(nn_dists, 75))
-    sigma = max(sigma, sigma_min * 2)          # floor: at least two halvings
+    sigma = max(sigma, sigma_min * 4)          # floor: at least two halvings
 
     dist_cutoff = float(np.percentile(nn_dists, 99)) * 1.5
     dist_cutoff = max(dist_cutoff, sigma * 3)  # always at least 3σ
@@ -250,6 +250,7 @@ def nonrigid_icp(
     outlier_weight: float = 0.1,
     normal_min_dot: float = 0.0,
     e_chunk: int = 2000,
+    symmetric: bool = True,
     verbose: bool = True,
 ) -> np.ndarray:
     """Register a moving surface onto a reference using non-rigid EM-ICP.
@@ -307,6 +308,15 @@ def nonrigid_icp(
     e_chunk : int
         Number of vertices processed per KDTree query batch in the E-step.
         Has no effect on results; lower values reduce peak memory.
+    symmetric : bool
+        If True (default), use symmetric correspondences (Reg2 from Combès &
+        Prima 2019): each edge weight is normalised by both the row sum
+        (mov→ref) *and* the column sum (ref→mov).  The combined weight is
+        ``ṽ_ij = w_ij/sR_i + w_ij/sC_j``.  This prevents many-to-one
+        mappings where multiple moving vertices collapse onto the same
+        reference vertex, which is especially harmful on non-convex surfaces
+        such as brain pial where sulcal folds are topologically close in
+        Euclidean space but anatomically distinct.
     verbose : bool
         Print iteration progress.
 
@@ -382,37 +392,63 @@ def nonrigid_icp(
         # Row sums (= total correspondence strength per moving vertex)
         row_sums = np.bincount(rows, weights=wvals, minlength=N)
 
+        if symmetric:
+            # Symmetric correspondences (Reg2 — Combès & Prima 2019):
+            # Combined weight  ṽ_ij = w_ij/sR_i + w_ij/sC_j
+            # normalises by both the row sum and the column sum, preventing
+            # many-to-one mappings where multiple moving vertices compete for
+            # the same reference vertex.
+            col_sums = np.bincount(cols, weights=wvals, minlength=M)
+            row_inv_per_edge = np.zeros(len(rows))
+            col_inv_per_edge = np.zeros(len(rows))
+            nz_r_mask = row_sums[rows] > 1e-10
+            nz_c_mask = col_sums[cols] > 1e-10
+            row_inv_per_edge[nz_r_mask] = 1.0 / row_sums[rows[nz_r_mask]]
+            col_inv_per_edge[nz_c_mask] = 1.0 / col_sums[cols[nz_c_mask]]
+            comb_w = wvals * (row_inv_per_edge + col_inv_per_edge)
+            W_sums = np.bincount(rows, weights=comb_w, minlength=N)
+            W_inv  = np.zeros(N)
+            nz_W   = W_sums > 1e-10
+            W_inv[nz_W] = 1.0 / W_sums[nz_W]
+            corresBary = np.empty((N, 3), dtype=float)
+            for k in range(3):
+                corresBary[:, k] = np.bincount(
+                    rows, weights=comb_w * ref_pts[cols, k], minlength=N
+                ) * W_inv
+            # Use W_sums for the outlier term (scaled to same range as row_sums
+            # by multiplying back by an effective row_sum scale)
+            eff_weight = W_sums
+            inlier_mask = W_sums > 0.0
+        else:
+            eff_weight = row_sums
+            # Barycentre normalised by raw row_sums.
+            row_inv = np.zeros(N)
+            nz_r = row_sums > 1e-10
+            row_inv[nz_r] = 1.0 / row_sums[nz_r]
+            corresBary = np.empty((N, 3), dtype=float)
+            for k in range(3):
+                corresBary[:, k] = np.bincount(
+                    rows, weights=wvals * ref_pts[cols, k], minlength=N
+                ) * row_inv
+            inlier_mask = row_sums > 0.0
+
+        del wvals, rows, cols
+
+        corresBary[~inlier_mask] = 0.0   # unused vertices: barycentre irrelevant
+
         # Outlier term: down-weight vertices whose total correspondence strength
         # is below a density-normalised threshold.
         # We use  c = outlier_weight × M/N  instead of the full CPD formula
         # (which contains (2πσ²)^{3/2} and blows up when σ is large, killing
         # all correspondences in the coarse/early iterations).
-        # Interpretation: a moving vertex is an "outlier" when its row_sum is
-        # below  outlier_weight × (M/N).  Because row_sums scale with M,
+        # Interpretation: a moving vertex is an "outlier" when its eff_weight is
+        # below  outlier_weight × (M/N).  Because eff_weight scales with M,
         # this threshold is density-normalised and σ-invariant.
         if outlier_weight > 0.0:
             c_outlier = outlier_weight * M / N
-            weight_out = row_sums / (row_sums + c_outlier)
+            weight_out = eff_weight / (eff_weight + c_outlier)
         else:
-            weight_out = row_sums.copy()
-
-        # Weighted barycentre per moving vertex (normalised by raw row_sums).
-        # Guard: row_sums near zero would overflow 1/row_sums → NaN propagation.
-        # Those vertices have weight_out ≈ 0 (outlier term dominates) so their
-        # barycentre is irrelevant; set row_inv = 0 to keep corresBary finite.
-        row_inv = np.zeros(N)
-        nz_r = row_sums > 1e-10
-        row_inv[nz_r] = 1.0 / row_sums[nz_r]
-
-        corresBary = np.empty((N, 3), dtype=float)
-        for k in range(3):
-            corresBary[:, k] = np.bincount(
-                rows, weights=wvals * ref_pts[cols, k], minlength=N
-            ) * row_inv
-        del wvals, rows, cols
-
-        inlier_mask = row_sums > 0.0
-        corresBary[~inlier_mask] = 0.0   # unused vertices: barycentre irrelevant
+            weight_out = eff_weight.copy()
 
         # ------------------------------------------------------------
         # M-step: preconditioned conjugate gradient
@@ -540,6 +576,7 @@ def nonrigid_icp_multires(
     outlier_weight: float = 0.1,
     normal_min_dot: float = 0.0,
     e_chunk: int = 2000,
+    symmetric: bool = True,
     verbose: bool = True,
 ) -> np.ndarray:
     """Multi-resolution non-rigid EM-ICP surface registration.
@@ -645,6 +682,22 @@ def nonrigid_icp_multires(
 
     n_actual = len(hierarchy)
 
+    # Pre-compute sigma_min from the FINEST-level mesh so that all levels
+    # share the same annealing floor.  Without this, coarser decimated meshes
+    # produce larger mesh_spacing → larger sigma_min → the sigma_min * 4 floor
+    # in estimate_registration_params forces the starting sigma much too high
+    # at coarse levels (e.g. sigma_min_coarse * 4 >> initial gap).
+    # By pinning sigma_min to the finest-level spacing throughout, coarse
+    # levels keep a fine sigma_min (→ more halvings, gradual annealing) and
+    # the warm-started fine level still benefits from sigma_min * 4 forcing
+    # at least two halvings even when the warm-start residual is small.
+    if sigma_min is None:
+        _finest_sample = min(2000, N)
+        _rng = np.random.default_rng(0)
+        _idx = _rng.choice(N, size=_finest_sample, replace=False)
+        _nn, _ = KDTree(mov_pts).query(mov_pts[_idx], k=2, workers=-1)
+        sigma_min = max(0.1, float(np.median(_nn[:, 1])) / 2.0)
+
     # ------------------------------------------------------------------
     # Register coarsest → finest
     # ------------------------------------------------------------------
@@ -717,6 +770,7 @@ def nonrigid_icp_multires(
             outlier_weight=outlier_weight,
             normal_min_dot=normal_min_dot,
             e_chunk=e_chunk,
+            symmetric=symmetric,
             verbose=verbose,
         )
 
