@@ -360,10 +360,17 @@ def normalize(input_path, output_path, target, quiet):
 @click.option("--beta-coarse-factor", default=1.0, show_default=True, type=float,
               help="Per-level beta multiplier toward coarser levels (only used when --beta is set). "
                    "beta at level idx = beta × factor^idx (idx=0: finest).")
+@click.option("--outlier-weight", default=0.1, show_default=True, type=float,
+              help="Prior probability of a vertex being an outlier (0=disabled). "
+                   "CPD-style: down-weights vertices with few/poor correspondences.")
+@click.option("--normal-min-dot", default=0.0, show_default=True, type=float,
+              help="Minimum dot-product of source/reference normals to accept a correspondence "
+                   "(0=same hemisphere, 1=perfectly aligned).")
 @_verbose_option
 def nlregister(input_path, ref_path, output_path, deformation,
                sigma, beta, dist_cutoff, max_iter, icm_iter, period_sigma,
-               sigma_min, e_chunk, n_levels, coarsest_n, beta_coarse_factor, quiet):
+               sigma_min, e_chunk, n_levels, coarsest_n, beta_coarse_factor,
+               outlier_weight, normal_min_dot, quiet):
     """Non-linearly register INPUT onto REF using EM-ICP.
 
     Outputs the warped INPUT surface.  Optionally saves the per-vertex
@@ -437,6 +444,8 @@ def nlregister(input_path, ref_path, output_path, deformation,
         icm_iter=icm_iter,
         period_sigma=period_sigma,
         sigma_min=sigma_min,
+        outlier_weight=outlier_weight,
+        normal_min_dot=normal_min_dot,
         e_chunk=e_chunk,
         verbose=verbose,
     )

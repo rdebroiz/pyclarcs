@@ -20,12 +20,14 @@ clarcs nlregister INPUT REF [OUTPUT] [--deformation FIELD] [options]
 | `OUTPUT` | Warped output surface. Defaults to `<INPUT_STEM>-nlregistered<EXT>` |
 | `--deformation FIELD` | Save the per-vertex deformation field to this VTK file (VECTORS point data) |
 | `--sigma F` | Initial bandwidth of the correspondence kernel — **auto-estimated if omitted** |
-| `--beta F` | Regularisation weight — higher = smoother field (default: `100.0`) |
+| `--beta F` | Regularisation weight — higher = smoother field — **auto-estimated if omitted** |
 | `--dist-cutoff F` | Search radius for candidate correspondences — **auto-estimated if omitted** |
 | `--max-iter N` | Number of outer EM iterations (default: `80`) |
 | `--icm-iter N` | Jacobi ICM steps per outer iteration (default: `120`) |
 | `--period-sigma N` | Halve sigma every N iterations — **auto-estimated if omitted** |
 | `--sigma-min F` | Annealing floor for sigma (default: `0.1`) |
+| `--outlier-weight F` | Prior probability of a vertex being an outlier (default: `0.1`). CPD-style term — down-weights vertices with few/poor correspondences. |
+| `--normal-min-dot F` | Minimum dot-product of source/reference normals to accept a correspondence (default: `0.0` = same hemisphere). |
 | `--e-chunk N` | Vertices per KDTree batch in the E-step (default: `2000`). Reduce to lower peak RAM. |
 | `-q / --quiet` | Suppress all output |
 
@@ -56,17 +58,23 @@ The algorithm is a non-rigid EM-ICP variant where the unknown is a
 per-vertex deformation field $d_i \in \mathbb{R}^3$ (one vector per vertex of
 the moving surface, initialised to zero).
 
-**E-step** — doubly-stochastic fuzzy correspondences
+**E-step** — Gaussian kernel + row-normalised weights + CPD outlier term
 
 For each transformed point $T_i = x_i + d_i$, candidate reference points
-$y_j$ within radius $r$ with a compatible normal ($n_i \cdot m_j \geq 0$)
+$y_j$ within radius $r$ with a compatible normal ($n_i \cdot m_j \geq \delta$)
 receive a weight:
 
-$$w_{ij} = \exp\!\left(-\|T_i - y_j\| / \sigma\right)$$
+$$w_{ij} = \exp\!\left(-\frac{\|T_i - y_j\|^2}{2\sigma^2}\right)$$
 
-The correspondence matrix is doubly normalised (row sums *and* column sums),
-which symmetrises the matching and suppresses outliers.  The resulting fuzzy
-target $\bar{y}_i$ is the weighted barycentre of the matched reference points.
+Row sum: $s_i = \sum_j w_{ij}$.  A CPD-style outlier constant is added to
+the denominator to down-weight vertices with sparse/poor correspondences:
+
+$$c_\text{out} = w\,\frac{M}{N}$$
+
+Effective vertex weight: $W_i = s_i / (s_i + c_\text{out})$.
+
+The fuzzy target is the row-normalised barycentre:
+$\bar{y}_i = \sum_j w_{ij}\,y_j / s_i$.
 
 **M-step** — Jacobi ICM
 
@@ -82,7 +90,10 @@ where $\mathcal{N}_i$ is the set of mesh-edge neighbours of $i$ and
 $W_i = \sum_j \tilde{w}_{ij}$ is the total correspondence weight.
 
 **Annealing** — $\sigma$ is halved every `period_sigma` iterations, sharpening
-the correspondences as the field converges.
+the correspondences as the field converges.  Using raw row sums (instead of
+doubly-stochastic normalisation) ensures that $W_i$ scales naturally with
+correspondence density: the data term dominates early (large $\sigma$, many
+neighbours) and gives way to Laplacian smoothing at fine scales.
 
 Vertex normals are computed automatically from the input mesh via VTK.
 The mesh adjacency graph is derived from the polygon connectivity of the moving

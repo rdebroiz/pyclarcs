@@ -44,6 +44,31 @@ E-step — doubly-stochastic fuzzy correspondences
   (rows, cols, weights).  Row/col sums and barycentres are then computed
   with numpy bincount — no N×M sparse matrix is ever constructed.
 
+E-step — Gaussian kernel + row-normalised weights + outlier term
+
+  For each vertex i:
+      T_i = x_i + d_i
+
+      For each y_j within radius r of T_i, normal compatible
+      (n_i · m_j ≥ normal_min_dot):
+          w_ij = exp( −‖T_i − y_j‖² / (2σ²) )
+
+      Row sum:  sR_i = Σ_j w_ij
+
+      Outlier-adjusted weight (CPD-style):
+          W_i = sR_i / (sR_i + c_outlier)
+
+      Barycentre:  ȳ_i = (Σ_j w_ij · y_j) / sR_i
+
+  The outlier constant is:
+      c_outlier = w/(1−w) · (2πσ²)^(3/2) · M/N
+  where w = outlier_weight ∈ [0, 1).
+
+  Using raw row sums (not doubly-stochastic) means W_i scales with
+  the number and quality of correspondences.  This ensures the data
+  term dominates when correspondences are dense (early/coarse) and
+  the regularisation takes over when they thin out (fine/late).
+
 M-step — preconditioned conjugate gradient
   Solves the sparse linear system  M · d[:,k] = b[:,k]  independently
   for each coordinate k ∈ {0, 1, 2}:
@@ -58,14 +83,15 @@ M-step — preconditioned conjugate gradient
 Annealing
   σ ← max(σ / 2,  σ_min)   every `period_sigma` outer iterations.
 
-DEFAULT PARAMETERS (matching the original C++ NonLinearRegistration)
-  sigma        = 3.0    initial bandwidth (same units as coordinates)
-  beta         = 10.0   regularisation weight
-  dist_cutoff  = 15.0   search radius
+DEFAULT PARAMETERS
+  sigma        = 3.0    initial bandwidth (std dev of Gaussian kernel)
+  beta         = 0.5    regularisation weight
+  dist_cutoff  = 15.0   search radius (typically 3–4 σ)
   max_iter     = 80
   icm_iter     = 50     max CG iterations per outer iteration
-  period_sigma = 40     sigma halved every 40 outer iterations
+  period_sigma = 20     sigma halved every 20 outer iterations
   sigma_min    = 0.1
+  outlier_weight = 0.1  fraction of points expected to be outliers
   e_chunk      = 2000   vertices per KDTree query batch
 """
 
@@ -124,9 +150,15 @@ def estimate_registration_params(
     Heuristics
       mesh_spacing = median 1-NN distance within the moving surface sample
       sigma_min    = max(0.1, mesh_spacing / 2)   [if not overridden]
-      beta         = max(1.0, 4.0 × mesh_spacing) [regularisation weight]
+      beta         = 0.5  [regularisation weight — tuned for Gaussian kernel + row sums]
       n_levels     = 1 if N≤5 000 else 2 if N≤30 000 else 3
-      sigma        = 50th percentile of NN-to-ref distances (median gap)
+      sigma        = 75th percentile of NN-to-ref distances
+                     Using the 75th percentile (not the median) ensures that the
+                     initial kernel is wide enough for non-convex surfaces (e.g.
+                     brain pial) where the nearest reference vertex can be an
+                     anatomically wrong match on an adjacent fold.  A broader
+                     initial sigma lets the algorithm "see past" such false
+                     candidates and then progressively tighten via annealing.
       dist_cutoff  = 99th percentile of NN-to-ref distances × 1.5
                      (floor: sigma × 3)
       period_sigma = max_iter // ceil(log2(sigma / sigma_min))
@@ -147,23 +179,43 @@ def estimate_registration_params(
     nn_self, _ = KDTree(mov_pts).query(sample, k=2, workers=-1)
     mesh_spacing = float(np.median(nn_self[:, 1]))
 
-    # Derived annealing floor and regularisation weight.
+    # Annealing floor: stop at half the mesh spacing so the last iterations
+    # still form meaningful correspondences.
     if sigma_min is None:
         sigma_min = max(0.1, mesh_spacing / 2.0)
-    beta = max(1.0, 4.0 * mesh_spacing)
+
+    # Regularisation weight β.
+    # With row-sum weights W ≈ n_neighbours × exp(−0.5) at fine scale and
+    # mean degree ≈ 6, we target ~30 % data trust at sigma_min:
+    #   W / (W + β × deg) ≈ 0.3  →  β ≈ W × (1/0.3 − 1) / deg
+    # At sigma_min, n_neighbours ≈ 4 within 2σ_min, mean weight ≈ 0.4
+    # → W ≈ 1.6, β ≈ 1.6 × 2.33 / 6 ≈ 0.62.
+    # We use β = 0.5 as a safe default that keeps the deformation smooth
+    # without over-constraining large-scale corrections at coarse levels.
+    beta = 0.5
 
     # Recommended number of resolution levels.
     N = len(mov_pts)
     n_levels = 1 if N <= 5_000 else (2 if N <= 30_000 else 3)
 
-    sigma = float(np.percentile(nn_dists, 50))
+    # Use the 75th percentile so that the initial kernel is wide enough to
+    # form meaningful correspondences even on non-convex surfaces (e.g. brain
+    # pial) where the nearest reference vertex can be a false match on an
+    # adjacent fold.  With the 50th percentile the kernel is too tight
+    # (~1.5× mesh spacing), which causes the algorithm to lock onto wrong
+    # correspondences early and converge to a local minimum.
+    sigma = float(np.percentile(nn_dists, 75))
     sigma = max(sigma, sigma_min * 2)          # floor: at least two halvings
 
     dist_cutoff = float(np.percentile(nn_dists, 99)) * 1.5
     dist_cutoff = max(dist_cutoff, sigma * 3)  # always at least 3σ
 
     n_halvings = max(1, math.ceil(math.log2(sigma / sigma_min)))
-    period_sigma = max(1, max_iter // n_halvings)
+    # Use (n_halvings + 1) slots so that after all halvings complete, at least
+    # one full slot of iterations runs at sigma_min — the tightest resolution.
+    # Without this, when sigma/sigma_min ≈ 2 the halving happens on the very
+    # last iteration and no refinement at sigma_min occurs.
+    period_sigma = max(1, max_iter // (n_halvings + 1))
 
     return {
         "sigma":        round(sigma,        4),
@@ -189,12 +241,14 @@ def nonrigid_icp(
     *,
     init_def_field: np.ndarray | None = None,
     sigma: float = 3.0,
-    beta: float = 10.0,
+    beta: float = 0.5,
     dist_cutoff: float = 15.0,
     max_iter: int = 80,
     icm_iter: int = 50,
-    period_sigma: int = 40,
+    period_sigma: int = 20,
     sigma_min: float = 0.1,
+    outlier_weight: float = 0.1,
+    normal_min_dot: float = 0.0,
     e_chunk: int = 2000,
     verbose: bool = True,
 ) -> np.ndarray:
@@ -222,13 +276,16 @@ def nonrigid_icp(
         Used by ``nonrigid_icp_multires`` to warm-start the finest level
         from the interpolated coarse solution.
     sigma : float
-        Initial bandwidth of the exponential correspondence kernel.
-        Should be on the order of the expected initial surface-to-surface
-        distance (e.g. set to dist_cutoff / 3 or larger for coarse alignment).
+        Initial bandwidth (std dev) of the Gaussian correspondence kernel
+        ``exp(−d²/(2σ²))``.  Auto-estimated as the 75th percentile of NN
+        distances if called via the CLI without ``--sigma``.
     beta : float
-        Regularisation weight (higher → smoother deformation).
+        Laplacian regularisation weight.  Higher → smoother deformation.
+        Must be small relative to the expected per-vertex correspondence
+        weight (typically 0.1–2.0); the default 0.5 gives a ~30 % data /
+        ~70 % regularisation split at the finest scale.
     dist_cutoff : float
-        Maximum search radius for candidate correspondences.
+        Maximum search radius for candidate correspondences (typically 3–4 σ).
     max_iter : int
         Number of outer EM iterations.
     icm_iter : int
@@ -237,6 +294,16 @@ def nonrigid_icp(
         Number of outer iterations between each halving of sigma.
     sigma_min : float
         Minimum value of sigma (annealing floor).
+    outlier_weight : float
+        Prior probability of a moving vertex being an outlier (0 = disabled).
+        Outlier constant: ``c = w × M/N`` (density-normalised, σ-invariant).
+        A vertex is effectively an outlier when its total correspondence weight
+        ``row_sum < c``.  Reduces the influence of vertices with sparse/poor
+        correspondences so they are dominated by the Laplacian prior.
+    normal_min_dot : float
+        Minimum dot product of moving and reference normals for a
+        correspondence to be accepted.  0.0 = same hemisphere (default);
+        increase toward 1.0 for stricter orientation filtering.
     e_chunk : int
         Number of vertices processed per KDTree query batch in the E-step.
         Has no effect on results; lower values reduce peak memory.
@@ -278,6 +345,8 @@ def nonrigid_icp(
         cols_parts: list[np.ndarray] = []
         wvals_parts: list[np.ndarray] = []
 
+        inv_two_sigma2 = 1.0 / (2.0 * sigma * sigma)
+
         for start in range(0, N, e_chunk):
             end = min(start + e_chunk, N)
             nbrs_chunk = ref_tree.query_ball_point(
@@ -290,12 +359,12 @@ def nonrigid_icp(
                 i = start + local_i
                 nbrs_arr = np.asarray(nbrs, dtype=np.int32)
                 diffs    = ref_pts[nbrs_arr] - transformed[i]
-                dists    = np.linalg.norm(diffs, axis=1)
-                valid    = (ref_normals[nbrs_arr] @ mov_normals[i]) >= 0.0
+                dists2   = np.einsum("ij,ij->i", diffs, diffs)   # squared distances
+                valid    = (ref_normals[nbrs_arr] @ mov_normals[i]) >= normal_min_dot
                 nbrs_v   = nbrs_arr[valid]
                 if len(nbrs_v) == 0:
                     continue
-                wv = np.exp(-dists[valid] / sigma)
+                wv = np.exp(-dists2[valid] * inv_two_sigma2)
                 rows_parts.append(np.full(len(nbrs_v), i, dtype=np.int32))
                 cols_parts.append(nbrs_v)
                 wvals_parts.append(wv)
@@ -310,33 +379,40 @@ def nonrigid_icp(
         wvals = np.concatenate(wvals_parts)
         del rows_parts, cols_parts, wvals_parts
 
-        # Row / column sums
+        # Row sums (= total correspondence strength per moving vertex)
         row_sums = np.bincount(rows, weights=wvals, minlength=N)
-        col_sums = np.bincount(cols, weights=wvals, minlength=M)
 
+        # Outlier term: down-weight vertices whose total correspondence strength
+        # is below a density-normalised threshold.
+        # We use  c = outlier_weight × M/N  instead of the full CPD formula
+        # (which contains (2πσ²)^{3/2} and blows up when σ is large, killing
+        # all correspondences in the coarse/early iterations).
+        # Interpretation: a moving vertex is an "outlier" when its row_sum is
+        # below  outlier_weight × (M/N).  Because row_sums scale with M,
+        # this threshold is density-normalised and σ-invariant.
+        if outlier_weight > 0.0:
+            c_outlier = outlier_weight * M / N
+            weight_out = row_sums / (row_sums + c_outlier)
+        else:
+            weight_out = row_sums.copy()
+
+        # Weighted barycentre per moving vertex (normalised by raw row_sums).
+        # Guard: row_sums near zero would overflow 1/row_sums → NaN propagation.
+        # Those vertices have weight_out ≈ 0 (outlier term dominates) so their
+        # barycentre is irrelevant; set row_inv = 0 to keep corresBary finite.
         row_inv = np.zeros(N)
-        nz_r = row_sums > 0.0
+        nz_r = row_sums > 1e-10
         row_inv[nz_r] = 1.0 / row_sums[nz_r]
 
-        col_inv = np.zeros(M)
-        nz_c = col_sums > 0.0
-        col_inv[nz_c] = 1.0 / col_sums[nz_c]
-
-        # Doubly-stochastic weights: ṽ_ij = w_ij·(1/sC_j + 1/sR_i)
-        v_tilde = wvals * (col_inv[cols] + row_inv[rows])
-        del wvals
-
-        # Weighted barycentre per moving vertex
-        weight_out = np.bincount(rows, weights=v_tilde, minlength=N)
         corresBary = np.empty((N, 3), dtype=float)
         for k in range(3):
             corresBary[:, k] = np.bincount(
-                rows, weights=v_tilde * ref_pts[cols, k], minlength=N
-            )
-        del v_tilde, rows, cols
+                rows, weights=wvals * ref_pts[cols, k], minlength=N
+            ) * row_inv
+        del wvals, rows, cols
 
-        inlier_mask = weight_out > 0.0
-        corresBary[inlier_mask] /= weight_out[inlier_mask, np.newaxis]
+        inlier_mask = row_sums > 0.0
+        corresBary[~inlier_mask] = 0.0   # unused vertices: barycentre irrelevant
 
         # ------------------------------------------------------------
         # M-step: preconditioned conjugate gradient
@@ -358,13 +434,17 @@ def nonrigid_icp(
         rhs    = weight_out[:, np.newaxis] * target_offset  # (N, 3)
 
         for k in range(3):
-            def_field[:, k], _ = sp_cg(
+            sol, _ = sp_cg(
                 M_mat, rhs[:, k],
                 x0=def_field[:, k],
                 M=M_prec,
                 rtol=1e-5,
                 maxiter=icm_iter,
             )
+            # Guard against NaN/Inf from degenerate CG (should not happen with
+            # correct rhs, but keep the previous solution if it does).
+            if np.all(np.isfinite(sol)):
+                def_field[:, k] = sol
 
         # ------------------------------------------------------------
         # Annealing: halve sigma every period_sigma iterations
@@ -457,6 +537,8 @@ def nonrigid_icp_multires(
     icm_iter: int = 50,
     period_sigma: int | None = None,
     sigma_min: float | None = None,
+    outlier_weight: float = 0.1,
+    normal_min_dot: float = 0.0,
     e_chunk: int = 2000,
     verbose: bool = True,
 ) -> np.ndarray:
@@ -632,6 +714,8 @@ def nonrigid_icp_multires(
             icm_iter=icm_iter,
             period_sigma=period_l,
             sigma_min=sigma_min_l,
+            outlier_weight=outlier_weight,
+            normal_min_dot=normal_min_dot,
             e_chunk=e_chunk,
             verbose=verbose,
         )
