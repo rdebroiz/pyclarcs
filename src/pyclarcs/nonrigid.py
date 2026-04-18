@@ -387,14 +387,14 @@ def nonrigid_icp(
     if use_rkhs:
         r_k = rkhs_radius if rkhs_radius is not None else sigma_min * 8.0
         mov_tree_k = KDTree(mov_pts)
-        K_rows, K_cols, K_data = [], [], []
-        for _i in range(N):
-            _nbrs = mov_tree_k.query_ball_point(mov_pts[_i], r_k, workers=1)
-            for _j in _nbrs:
-                _r = np.linalg.norm(mov_pts[_i] - mov_pts[_j]) / r_k
-                _kv = max(0.0, (1.0 - _r) ** 4 * (4.0 * _r + 1.0))
-                K_rows.append(_i); K_cols.append(_j); K_data.append(_kv)
-        K_mat = csr_matrix((K_data, (K_rows, K_cols)), shape=(N, N))
+        # sparse_distance_matrix is C-backed: returns COO with all pairs
+        # (i, j) whose Euclidean distance < r_k in one vectorised call.
+        _coo = mov_tree_k.sparse_distance_matrix(
+            mov_tree_k, r_k, output_type="coo_matrix"
+        )
+        _r_norm = _coo.data / r_k                               # in [0, 1)
+        _kv     = (1.0 - _r_norm) ** 4 * (4.0 * _r_norm + 1.0)
+        K_mat   = csr_matrix((_kv, (_coo.row, _coo.col)), shape=(N, N))
         c_field = np.zeros((N, 3), dtype=float)
         if verbose:
             nnz = K_mat.nnz
