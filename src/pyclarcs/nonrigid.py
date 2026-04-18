@@ -250,6 +250,9 @@ def nonrigid_icp(
     outlier_weight: float = 0.1,
     normal_min_dot: float = 0.0,
     e_chunk: int = 2000,
+    tgd_mov: np.ndarray | None = None,
+    tgd_ref: np.ndarray | None = None,
+    sigma_tgd: float = 0.2,
     symmetric: bool = True,
     verbose: bool = True,
 ) -> np.ndarray:
@@ -308,6 +311,19 @@ def nonrigid_icp(
     e_chunk : int
         Number of vertices processed per KDTree query batch in the E-step.
         Has no effect on results; lower values reduce peak memory.
+    tgd_mov : ndarray (N,) or None
+        Normalised Total Geodesic Distance for each moving vertex,
+        pre-computed via ``mesh.compute_tgd``.  If provided together with
+        ``tgd_ref``, a TGD shape prior (Reg3, Combès & Prima 2019) is applied
+        in the E-step: ``π_ij = exp(−|tgd_mov[i]−tgd_ref[j]|²/(2σ_tgd²))``
+        is multiplied into each correspondence weight, penalising matches
+        between vertices at different sulcal depths.
+    tgd_ref : ndarray (M,) or None
+        Normalised TGD for each reference vertex.
+    sigma_tgd : float
+        Bandwidth of the TGD prior kernel (both TGD arrays are in [0, 1]).
+        Smaller values apply a tighter shape prior; default 0.2 rejects
+        pairs whose normalised TGD differs by more than ~0.4 (2σ cutoff).
     symmetric : bool
         If True (default), use symmetric correspondences (Reg2 from Combès &
         Prima 2019): each edge weight is normalised by both the row sum
@@ -333,6 +349,12 @@ def nonrigid_icp(
 
     N = len(mov_pts)
     M = len(ref_pts)
+
+    use_tgd = (tgd_mov is not None) and (tgd_ref is not None)
+    if use_tgd:
+        tgd_mov = np.asarray(tgd_mov, dtype=float)
+        tgd_ref = np.asarray(tgd_ref, dtype=float)
+        inv_two_sigma_tgd2 = 1.0 / (2.0 * sigma_tgd * sigma_tgd)
 
     if init_def_field is not None:
         def_field = np.asarray(init_def_field, dtype=float).copy()
@@ -375,6 +397,9 @@ def nonrigid_icp(
                 if len(nbrs_v) == 0:
                     continue
                 wv = np.exp(-dists2[valid] * inv_two_sigma2)
+                if use_tgd:
+                    tgd_diff2 = (tgd_mov[i] - tgd_ref[nbrs_v]) ** 2
+                    wv *= np.exp(-tgd_diff2 * inv_two_sigma_tgd2)
                 rows_parts.append(np.full(len(nbrs_v), i, dtype=np.int32))
                 cols_parts.append(nbrs_v)
                 wvals_parts.append(wv)
@@ -562,6 +587,7 @@ def nonrigid_icp_multires(
     ref_pts: np.ndarray,
     ref_normals: np.ndarray,
     mov_polygons: list,
+    ref_polygons: list | None = None,
     *,
     n_levels: int = 3,
     target_n_coarsest: int = 2000,
@@ -577,6 +603,9 @@ def nonrigid_icp_multires(
     normal_min_dot: float = 0.0,
     e_chunk: int = 2000,
     symmetric: bool = True,
+    use_tgd: bool = True,
+    tgd_n_seeds: int = 200,
+    sigma_tgd: float = 0.5,
     verbose: bool = True,
 ) -> np.ndarray:
     """Multi-resolution non-rigid EM-ICP surface registration.
@@ -699,6 +728,47 @@ def nonrigid_icp_multires(
         sigma_min = max(0.1, float(np.median(_nn[:, 1])) / 2.0)
 
     # ------------------------------------------------------------------
+    # Compute TGD once on finest mesh and reference, interpolate per level
+    # ------------------------------------------------------------------
+    tgd_mov_fine: np.ndarray | None = None
+    tgd_ref_arr:  np.ndarray | None = None
+    if use_tgd:
+        from pyclarcs.mesh import compute_tgd
+        if verbose:
+            print("  [multires] computing TGD on moving surface…")
+        tgd_mov_fine = compute_tgd(mov_pts, mov_polygons, n_seeds=tgd_n_seeds)
+        if verbose:
+            print("  [multires] computing TGD on reference surface…")
+        if ref_polygons is not None:
+            tgd_ref_arr = compute_tgd(ref_pts, ref_polygons, n_seeds=tgd_n_seeds)
+        else:
+            # No polygon connectivity supplied — approximate via KNN graph
+            from scipy.spatial import KDTree as _KDTree
+            from scipy.sparse import csr_matrix as _csr
+            from scipy.sparse.csgraph import dijkstra as _dijkstra
+            _ref_tree = _KDTree(ref_pts)
+            _dists, _idxs = _ref_tree.query(ref_pts, k=9, workers=-1)
+            M_ref = len(ref_pts)
+            _rrows, _rcols, _rdata = [], [], []
+            for _i in range(M_ref):
+                for _k in range(1, 9):
+                    _j = _idxs[_i, _k]
+                    _rrows.append(_i); _rcols.append(_j)
+                    _rdata.append(float(_dists[_i, _k]))
+            _ref_graph = _csr((_rdata, (_rrows, _rcols)), shape=(M_ref, M_ref))
+            _rng2 = np.random.default_rng(0)
+            _ref_seeds = _rng2.choice(M_ref, size=min(tgd_n_seeds, M_ref), replace=False)
+            _ref_dist = _dijkstra(_ref_graph, indices=_ref_seeds, directed=False)
+            _fin_max = float(_ref_dist[np.isfinite(_ref_dist)].max()) \
+                       if np.isfinite(_ref_dist).any() else 1.0
+            _ref_dist = np.where(np.isinf(_ref_dist), _fin_max, _ref_dist)
+            tgd_ref_arr = _ref_dist.sum(axis=0)
+            _mx = tgd_ref_arr.max()
+            if _mx > 0:
+                tgd_ref_arr /= _mx
+            tgd_ref_arr = tgd_ref_arr.astype(float)
+
+    # ------------------------------------------------------------------
     # Register coarsest → finest
     # ------------------------------------------------------------------
     def_field_prev: np.ndarray | None = None   # result from coarser level
@@ -745,14 +815,26 @@ def nonrigid_icp_multires(
             if beta_l     is None: beta_l     = auto["beta"]
             if sigma_min_l is None: sigma_min_l = auto["sigma_min"]
 
+        # TGD for this level: interpolate fine-level TGD to coarser mesh
+        if use_tgd and tgd_mov_fine is not None:
+            if idx == 0:
+                tgd_mov_l = tgd_mov_fine
+            else:
+                tgd_mov_l = _interpolate_field(
+                    tgd_mov_fine[:, np.newaxis], mov_pts, pts_l
+                ).ravel()
+        else:
+            tgd_mov_l = None
+
         if verbose:
             label = "finest" if is_finest else f"level {idx}"
+            tgd_tag = f"  TGD={'on' if tgd_mov_l is not None else 'off'}"
             print(
                 f"\n  [multires] {label}  {N_l} vertices"
                 f"  {max_iter_l} outer iterations"
                 f"  β={beta_l:.2f}  σ_min={sigma_min_l:.3f}"
                 f"  σ={sigma_l:.3f}  r={cutoff_l:.2f}"
-                f"  period_σ={period_l}"
+                f"  period_σ={period_l}{tgd_tag}"
             )
 
         def_field_l = nonrigid_icp(
@@ -770,6 +852,9 @@ def nonrigid_icp_multires(
             outlier_weight=outlier_weight,
             normal_min_dot=normal_min_dot,
             e_chunk=e_chunk,
+            tgd_mov=tgd_mov_l,
+            tgd_ref=tgd_ref_arr,
+            sigma_tgd=sigma_tgd,
             symmetric=symmetric,
             verbose=verbose,
         )

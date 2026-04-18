@@ -62,19 +62,19 @@ def run_clarcs(
     ref_pts: np.ndarray,
     ref_normals: np.ndarray,
     mov_polygons: list,
+    ref_polygons: list | None = None,
     max_iter: int = 80,
     verbose: bool = False,
 ) -> tuple[np.ndarray, float]:
     """Run clarcs EM-ICP.  Returns (warped_pts, elapsed_seconds)."""
     from pyclarcs.nonrigid import nonrigid_icp_multires, apply_deformation
-    from pyclarcs.mesh import adjacency_csr
-    from pyclarcs.nonrigid import estimate_registration_params
 
     t0 = time.perf_counter()
     def_field = nonrigid_icp_multires(
         mov_pts, mov_normals,
         ref_pts, ref_normals,
         mov_polygons,
+        ref_polygons,
         max_iter=max_iter,
         verbose=verbose,
     )
@@ -330,7 +330,8 @@ def main(output_dir, pairs, methods, max_iter, no_preprocess, bcpd_bin, quiet):
             try:
                 if method == "clarcs":
                     warped, elapsed = run_clarcs(
-                        tgt_pts, tgt_normals, ref_pts_n, ref_normals, tgt_poly,
+                        tgt_pts, tgt_normals, ref_pts_n, ref_normals,
+                        tgt_poly, ref_poly,
                         max_iter=max_iter, verbose=verbose,
                     )
                 elif method == "cpd":
