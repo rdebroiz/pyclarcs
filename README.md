@@ -1,36 +1,26 @@
-# clarcs
+# pyclarcs
 
-Python toolkit for the automated analysis of 3-D surfaces, with a focus on
-endocranial and bilateral anatomical structures.
+Python toolkit for the automated analysis of 3-D anatomical surfaces, with a
+focus on endocranial and bilateral structures.
 
-`clarcs` is an extensible command-line tool built around a symmetry plane
-estimation algorithm described in:
+`clarcs` is a command-line tool built around two core algorithms:
 
-> Combès B., Hennessy R., Waddington J., Roberts N., Prima S.  
-> **Automatic symmetry plane estimation of bilateral objects in point clouds.**  
-> *IEEE Conference on Computer Vision and Pattern Recognition (CVPR 2008).*
-> Anchorage, United States.
-
-and used in the CLARCS research framework, presented in:
-
-> Abadie A., Combès B., Haegelen C., Prima S.  
-> **CLARCS, a C++ Library for Automated Registration and Comparison of Surfaces:
-> Medical Applications.**  
-> *MICCAI Workshop on Mesh Processing in Medical Image Analysis
-> (MeshMed'2011).* Toronto, Canada, pp. 117–126.
+- **Symmetry-plane estimation** — described in Combès et al., CVPR 2008
+- **Non-rigid surface registration** — EM-ICP with symmetric correspondences,
+  TGD geodesic prior, and RKHS Wu-kernel M-step (Combès & Prima, CVIU 2019)
 
 ---
 
 ## Installation
 
 ```bash
-pip install clarcs
+pip install pyclarcs
 ```
 
 Or from source:
 
 ```bash
-git clone <repo>
+git clone https://github.com/rdebroiz/pyclarcs
 cd pyclarcs
 pip install -e ".[dev]"
 ```
@@ -39,17 +29,17 @@ pip install -e ".[dev]"
 
 | Package | Role |
 |---|---|
-| `numpy ≥ 1.21` | Linear algebra |
-| `scipy ≥ 1.7` | KD-tree neighbour search |
-| `vtk ≥ 9.0` | Surface I/O |
-| `numba ≥ 0.57` | JIT-compiled kernels (4× speedup on EM stage) |
+| `numpy ≥ 1.21` | Numerics |
+| `scipy ≥ 1.7` | KD-tree, sparse linear algebra, graph shortest paths |
+| `vtk ≥ 9.0` | Surface I/O and mesh processing |
+| `numba ≥ 0.57` | JIT-compiled kernels (4× speedup on EM stages) |
+| `click ≥ 8.0` | CLI framework |
 
 ---
 
 ## Supported formats
 
-Both reading and writing support the following formats (format inferred from
-file extension):
+Format is inferred from the file extension.
 
 | Extension | Format |
 |---|---|
@@ -64,93 +54,102 @@ file extension):
 
 ## Commands
 
-| Command | Description | Documentation |
-|---|---|---|
-| [`clarcs reorient`](docs/reorient.md) | Permute the coordinate axes of a surface | [docs/reorient.md](docs/reorient.md) |
-| [`clarcs symplane`](docs/symplane.md) | Estimate the best bilateral symmetry plane | [docs/symplane.md](docs/symplane.md) |
-| [`clarcs recenter`](docs/recenter.md) | Rigidly align a surface to the canonical symmetry plane | [docs/recenter.md](docs/recenter.md) |
-| [`clarcs centerofmass`](docs/centerofmass.md) | Translate a surface to match a reference's centre of mass | [docs/centerofmass.md](docs/centerofmass.md) |
-| [`clarcs normalize`](docs/normalize.md) | Translate and uniformly scale a surface to match a reference | [docs/normalize.md](docs/normalize.md) |
-| [`clarcs nlregister`](docs/nlregister.md) | Non-rigidly register a surface onto a reference (EM-ICP) | [docs/nlregister.md](docs/nlregister.md) |
+| Command | Description |
+|---|---|
+| [`clarcs reorient`](docs/reorient.md) | Permute coordinate axes |
+| [`clarcs symplane`](docs/symplane.md) | Estimate the bilateral symmetry plane |
+| [`clarcs recenter`](docs/recenter.md) | Rigidly align a surface to its symmetry plane |
+| [`clarcs centerofmass`](docs/centerofmass.md) | Translate to match a reference's centre of mass |
+| [`clarcs normalize`](docs/normalize.md) | Scale and translate to match a reference |
+| [`clarcs nlregister`](docs/nlregister.md) | Non-rigid EM-ICP registration onto a reference |
 
 ---
 
 ## Typical pipeline
 
-The commands are designed to be chained.  A complete registration workflow
-(symmetry-plane alignment → scale normalisation → non-rigid registration):
-
 ```bash
-# 1. Align target's symmetry plane to x = 0
+# 1. Align symmetry plane to x = 0
 clarcs recenter   target.vtk  target-recentered.vtk  --save-plane
 
 # 2. Match size and centre of mass to the reference
 clarcs normalize  target-recentered.vtk  target-normalized.vtk  --target ref.vtk
 
 # 3. Non-rigid EM-ICP onto the reference
-clarcs nlregister target-normalized.vtk  ref.vtk  target-nlregistered.vtk \
+clarcs nlregister target-normalized.vtk  ref.vtk  target-registered.vtk \
                   --deformation target-deformation.vtk
 ```
 
-`data/run_pipeline.py` automates this sequence on the test surfaces bundled
-in `data/` and writes all intermediate results to a directory of your choice:
+`data/run_pipeline.py` automates this sequence on the bundled test surfaces:
 
 ```bash
-python data/generate_samples.py          # create test surfaces (once)
-python data/run_pipeline.py  results/    # run full pipeline, save to results/
+python data/generate_samples.py   # create test surfaces (once)
+python data/run_pipeline.py  results/
 ```
 
 ---
 
 ## Python API
 
+### Symmetry plane
+
 ```python
-from pyclarcs.io import load_surface, load_surface_with_normals, save_surface
-from pyclarcs.symmetry import SymmetryPlane
+from pyclarcs.io import load_surface, save_surface, save_plane_vtk
 from pyclarcs.principal_axes import best_principal_axis_plane
 from pyclarcs.coarse import coarse_symmetry
 from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
-from pyclarcs.alignment import align_to_symmetry_plane, align_rescale
-from pyclarcs.mesh import adjacency_csr
-from pyclarcs.nonrigid import nonrigid_icp, apply_deformation
 
-# --- Symmetry plane ---
 points, polygons = load_surface("surface.vtk")
-plane = best_principal_axis_plane(points)
-plane = coarse_symmetry(points, plane)
-plane = em_icp_sym(points, plane)
-plane = em_icp_sym_corres(points, plane)
+
+plane = best_principal_axis_plane(points)       # initialise
+plane = coarse_symmetry(points, plane)           # coarse ICP
+plane = em_icp_sym(points, plane)               # EM annealing
+plane = em_icp_sym_corres(points, plane)        # doubly-stochastic refinement
+
 plane.save("plane.pl")
-
-# --- Non-rigid registration ---
-from pyclarcs.nonrigid import nonrigid_icp, apply_deformation, estimate_registration_params
-
-mov_pts, mov_poly, mov_n = load_surface_with_normals("target-normalized.vtk")
-ref_pts, _,        ref_n = load_surface_with_normals("ref.vtk")
-adj = adjacency_csr(mov_poly, len(mov_pts))
-
-# Auto-estimate sigma, dist_cutoff and period_sigma from the surfaces.
-# These three parameters are derived from the nearest-neighbour distance
-# distribution between a 2 000-point subsample of the moving surface and
-# the reference:
-#   sigma        = 50th percentile of NN distances (median gap)
-#   dist_cutoff  = max(99th percentile × 1.5,  sigma × 3)
-#   period_sigma = max_iter // ceil(log2(sigma / sigma_min))
-# Pass explicit values to override any of them.
-params = estimate_registration_params(mov_pts, ref_pts)
-
-def_field = nonrigid_icp(mov_pts, mov_n, ref_pts, ref_n, adj, **params)
-warped    = apply_deformation(mov_pts, def_field)
+bounds = (points.min(0), points.max(0))         # used only for visualisation
+save_plane_vtk("plane.vtk", plane, bounds)
 ```
+
+### Non-rigid registration
+
+```python
+from pyclarcs.io import load_surface, load_surface_with_normals, save_surface
+from pyclarcs.nonrigid import nonrigid_icp_multires, apply_deformation
+
+mov_pts, mov_poly, mov_normals = load_surface_with_normals("target-normalized.vtk")
+ref_pts, ref_poly              = load_surface("ref.vtk")
+_, _,    ref_normals           = load_surface_with_normals("ref.vtk")
+
+# All three improvements are on by default:
+#   symmetric=True   — symmetric correspondences (Reg2)
+#   use_tgd=True     — TGD geodesic shape prior  (Reg3)
+#   use_rkhs=True    — RKHS Wu-kernel M-step
+def_field = nonrigid_icp_multires(
+    mov_pts, mov_normals,
+    ref_pts, ref_normals,
+    mov_poly, ref_poly,
+)
+
+warped = apply_deformation(mov_pts, def_field)
+save_surface("registered.vtk", warped, mov_poly)
+```
+
+See [`docs/nlregister.md`](docs/nlregister.md) for all parameters and
+a benchmark table.
 
 ---
 
-## Running the tests
+## Registration benchmark
 
-```bash
-pip install -e ".[dev]"
-pytest tests/
-```
+`endocranium_mni_pial` 10 k-vertex brain pial surface, synthetic deformation:
+
+| Method | RMS after | Improvement | Time |
+|---|---|---|---|
+| BCPD (Nyström C++) | 3.82 mm | 37.9 % | 1.7 s |
+| clarcs baseline | 3.89 mm | 35.7 % | 80 s |
+| + Symmetric correspondences | 2.37 mm | 62.8 % | 74 s |
+| + TGD prior | 2.36 mm | 62.9 % | 83 s |
+| + RKHS M-step **(v0.2.0)** | **0.99 mm** | **84.0 %** | 97 s |
 
 ---
 
@@ -158,7 +157,7 @@ pytest tests/
 
 ```
 pyclarcs/
-├── pyproject.toml              ← packaging (PyPI-ready, installs as clarcs)
+├── pyproject.toml
 ├── README.md
 ├── docs/                       ← per-command documentation
 │   ├── reorient.md
@@ -167,27 +166,38 @@ pyclarcs/
 │   ├── centerofmass.md
 │   ├── normalize.md
 │   └── nlregister.md
-├── data/                       ← test surfaces and pipeline scripts
-│   ├── generate_samples.py     ← generate synthetic + MNI surfaces and test pairs
-│   └── run_pipeline.py         ← run recenter → rescale → register end-to-end
-├── src/
-│   └── pyclarcs/
-│       ├── __init__.py
-│       ├── __main__.py         ← python -m pyclarcs
-│       ├── _cli.py             ← clarcs command + sub-commands (internal)
-│       ├── symmetry.py         ← SymmetryPlane class
-│       ├── principal_axes.py   ← inertia tensor, PA initialisation
-│       ├── io.py               ← multi-format surface I/O via VTK 9+
-│       ├── coarse.py           ← ICP + trimmed estimator, multi-resolution
-│       ├── fine.py             ← EM-ICP (annealing + doubly-stochastic)
-│       ├── alignment.py        ← centerofmass, rescale, recenter, orient
-│       ├── mesh.py             ← mesh adjacency utilities
-│       ├── nonrigid.py         ← non-rigid EM-ICP registration
-│       └── _numba_kernels.py   ← JIT-compiled kernels (Numba, internal)
-└── tests/
-    ├── test_symmetry.py
-    └── test_alignment.py
+├── data/
+│   ├── generate_samples.py     ← generate synthetic + MNI test surfaces
+│   ├── benchmark_compare.py    ← compare clarcs / CPD / BCPD
+│   └── run_pipeline.py         ← run the full pipeline end-to-end
+└── src/pyclarcs/
+    ├── _cli.py                 ← CLI entry-point (clarcs command)
+    ├── symmetry.py             ← SymmetryPlane class
+    ├── principal_axes.py       ← inertia tensor initialisation
+    ├── io.py                   ← multi-format surface I/O (VTK 9+)
+    ├── coarse.py               ← coarse ICP with trimmed estimator
+    ├── fine.py                 ← EM-ICP annealing + doubly-stochastic
+    ├── alignment.py            ← rigid transforms (recenter, rescale, …)
+    ├── mesh.py                 ← adjacency, TGD, Wu kernel graph
+    ├── nonrigid.py             ← non-rigid EM-ICP (Reg2 + Reg3 + RKHS)
+    └── _numba_kernels.py       ← JIT-compiled inner loops (internal)
 ```
+
+---
+
+## Scientific references
+
+> Combès B., Hennessy R., Waddington J., Roberts N., Prima S.
+> **Automatic symmetry plane estimation of bilateral objects in point clouds.**
+> *CVPR 2008.* Anchorage, United States.
+
+> Abadie A., Combès B., Haegelen C., Prima S.
+> **CLARCS, a C++ Library for Automated Registration and Comparison of Surfaces.**
+> *MeshMed @ MICCAI 2011.* Toronto, Canada, pp. 117–126.
+
+> Combès B., Prima S.
+> **New algorithms for the deformable registration of brain images.**
+> *Medical Image Analysis, CVIU 2019.*
 
 ---
 

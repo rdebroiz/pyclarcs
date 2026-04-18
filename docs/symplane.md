@@ -136,8 +136,7 @@ print(plane)
 # SymmetryPlane(n=[0.9998, 0.0123, -0.0045], d=83.2156)
 
 plane.save("plane.pl")
-bounds = (points[:, 0].min(), points[:, 0].max(),
-          points[:, 1].min(), points[:, 1].max(),
-          points[:, 2].min(), points[:, 2].max())
-save_plane_vtk("plane.vtk", plane, bounds)
+xmin, ymin, zmin = points.min(axis=0)
+xmax, ymax, zmax = points.max(axis=0)
+save_plane_vtk("plane.vtk", plane, (xmin, xmax, ymin, ymax, zmin, zmax))
 ```

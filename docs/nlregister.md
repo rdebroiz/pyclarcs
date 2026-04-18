@@ -27,7 +27,7 @@ clarcs nlregister INPUT REF [OUTPUT] [--deformation FIELD] [options]
 | `--beta F` | auto | Laplacian regularisation weight (used only with `--no-rkhs`) |
 | `--dist-cutoff F` | auto | Correspondence search radius [mm] |
 | `--max-iter N` | `80` | Outer EM iterations |
-| `--icm-iter N` | `50` | Max CG iterations per outer iteration |
+| `--icm-iter N` | `50` | Max conjugate-gradient iterations per outer iteration |
 | `--period-sigma N` | auto | Halve sigma every N iterations |
 | `--sigma-min F` | auto | Annealing floor for sigma |
 | `--outlier-weight F` | `0.1` | Prior probability of outlier vertex (CPD-style) |
@@ -176,12 +176,12 @@ from pyclarcs.nonrigid import nonrigid_icp_multires, apply_deformation
 
 mov_pts, mov_poly, mov_normals = load_surface_with_normals("target.vtk")
 ref_pts, ref_poly              = load_surface("reference.vtk")
-_, _,    ref_normals           = load_surface_with_normals("reference.vtk")
+ref_pts_n, _, ref_normals      = load_surface_with_normals("reference.vtk")
 
 def_field = nonrigid_icp_multires(
     mov_pts, mov_normals,
-    ref_pts, ref_normals,
-    mov_poly, ref_poly,   # ref_poly enables mesh-based TGD for reference
+    ref_pts_n, ref_normals,
+    mov_poly, ref_poly,      # ref_poly enables mesh-based TGD for reference
     # All algorithmic improvements are on by default:
     # symmetric=True, use_tgd=True, use_rkhs=True
 )
