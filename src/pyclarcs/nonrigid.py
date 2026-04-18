@@ -254,6 +254,9 @@ def nonrigid_icp(
     tgd_ref: np.ndarray | None = None,
     sigma_tgd: float = 0.2,
     symmetric: bool = True,
+    use_rkhs: bool = True,
+    rkhs_radius: float | None = None,
+    rkhs_lambda: float = 0.01,
     verbose: bool = True,
 ) -> np.ndarray:
     """Register a moving surface onto a reference using non-rigid EM-ICP.
@@ -324,6 +327,20 @@ def nonrigid_icp(
         Bandwidth of the TGD prior kernel (both TGD arrays are in [0, 1]).
         Smaller values apply a tighter shape prior; default 0.2 rejects
         pairs whose normalised TGD differs by more than ~0.4 (2σ cutoff).
+    use_rkhs : bool
+        If True (default), replace the Laplacian M-step with an RKHS
+        deformation model using the Wu C4 compactly-supported kernel
+        (Combès & Prima 2019, Reg3).  The deformation is expressed as
+        d = K α, where K_ij = wu(||x_i−x_j||/r) is a sparse kernel matrix.
+        The M-step solves (diag(W)·K + λ·I)·α = W·target', then d = K·α.
+        This gives a smoother, topology-independent regularisation than the
+        Laplacian graph prior.
+    rkhs_radius : float or None
+        Compact support radius of the Wu kernel (in mesh units).
+        None (default) → auto-set to ``sigma_min * 8``.
+    rkhs_lambda : float
+        RKHS regularisation weight.  Default 0.01; smaller values allow
+        larger deformations but risk instability.
     symmetric : bool
         If True (default), use symmetric correspondences (Reg2 from Combès &
         Prima 2019): each edge weight is normalised by both the row sum
@@ -361,8 +378,27 @@ def nonrigid_icp(
     else:
         def_field = np.zeros((N, 3), dtype=float)
 
-    # Precompute adjacency statistics (fixed throughout)
+    # Precompute adjacency statistics (fixed throughout, Laplacian mode)
     neigh_count = np.asarray(adjacency.sum(axis=1), dtype=float).ravel()  # (N,)
+
+    # RKHS Wu kernel pre-computation (fixed on original mesh positions)
+    K_mat: csr_matrix | None = None
+    c_field: np.ndarray | None = None    # RKHS coefficient field (N, 3)
+    if use_rkhs:
+        r_k = rkhs_radius if rkhs_radius is not None else sigma_min * 8.0
+        mov_tree_k = KDTree(mov_pts)
+        K_rows, K_cols, K_data = [], [], []
+        for _i in range(N):
+            _nbrs = mov_tree_k.query_ball_point(mov_pts[_i], r_k, workers=1)
+            for _j in _nbrs:
+                _r = np.linalg.norm(mov_pts[_i] - mov_pts[_j]) / r_k
+                _kv = max(0.0, (1.0 - _r) ** 4 * (4.0 * _r + 1.0))
+                K_rows.append(_i); K_cols.append(_j); K_data.append(_kv)
+        K_mat = csr_matrix((K_data, (K_rows, K_cols)), shape=(N, N))
+        c_field = np.zeros((N, 3), dtype=float)
+        if verbose:
+            nnz = K_mat.nnz
+            print(f"  [RKHS] Wu kernel built: r={r_k:.2f}  nnz={nnz} ({nnz/N:.0f}/vertex)")
 
     ref_tree = KDTree(ref_pts)
 
@@ -477,35 +513,53 @@ def nonrigid_icp(
 
         # ------------------------------------------------------------
         # M-step: preconditioned conjugate gradient
-        # Minimises:  Σ_i W_i ‖x_i + d_i − ȳ_i‖²
-        #           + β Σ_{(i,j)∈edges} ‖d_i − d_j‖²
-        # Equivalent to solving the symmetric PSD system:
-        #   M · d[:,k] = b[:,k]   for k ∈ {0, 1, 2}
-        # where
-        #   M   = diag(W_i + β·|N_i|)  −  β · adjacency
-        #   b_i = W_i · (ȳ_i − x_i)_k
-        # Jacobi preconditioner M_inv = diag(1 / diag(M)).
-        # Each coordinate is solved independently; the previous d warm-starts.
+        # Two modes:
+        #  RKHS (use_rkhs=True):  deformation d = K α, solves
+        #    (diag(W) K + λ I) α = diag(W) target'   for each coord
+        #    d = K α
+        #  Laplacian (use_rkhs=False):  solves
+        #    (diag(W + β|N_i|) - β A) d = diag(W) target'
         # ------------------------------------------------------------
         target_offset = corresBary - mov_pts  # (N, 3)
 
-        diag_vals = weight_out + beta * neigh_count          # (N,)
-        M_mat  = sp_diags(diag_vals) - beta * adjacency     # (N, N) PSD
-        M_prec = sp_diags(1.0 / np.maximum(diag_vals, 1e-10))  # Jacobi precond
-        rhs    = weight_out[:, np.newaxis] * target_offset  # (N, 3)
+        if use_rkhs and K_mat is not None:
+            # RKHS M-step: (W K + λ I) α = W target'
+            WK = sp_diags(weight_out) @ K_mat             # (N, N) sparse
+            lhs = WK + sp_diags(np.full(N, rkhs_lambda))  # + λ I
+            prec_rkhs = sp_diags(1.0 / np.maximum(lhs.diagonal(), 1e-10))
+            rhs = weight_out[:, np.newaxis] * target_offset
 
-        for k in range(3):
-            sol, _ = sp_cg(
-                M_mat, rhs[:, k],
-                x0=def_field[:, k],
-                M=M_prec,
-                rtol=1e-5,
-                maxiter=icm_iter,
-            )
-            # Guard against NaN/Inf from degenerate CG (should not happen with
-            # correct rhs, but keep the previous solution if it does).
-            if np.all(np.isfinite(sol)):
-                def_field[:, k] = sol
+            for k in range(3):
+                sol, _ = sp_cg(
+                    lhs, rhs[:, k],
+                    x0=c_field[:, k],
+                    M=prec_rkhs,
+                    rtol=1e-5,
+                    maxiter=icm_iter,
+                )
+                if np.all(np.isfinite(sol)):
+                    c_field[:, k] = sol
+
+            d_new = K_mat @ c_field          # d = K α
+            if np.all(np.isfinite(d_new)):
+                def_field[:] = d_new
+        else:
+            # Laplacian M-step
+            diag_vals = weight_out + beta * neigh_count          # (N,)
+            M_mat  = sp_diags(diag_vals) - beta * adjacency     # (N, N) PSD
+            M_prec = sp_diags(1.0 / np.maximum(diag_vals, 1e-10))
+            rhs    = weight_out[:, np.newaxis] * target_offset  # (N, 3)
+
+            for k in range(3):
+                sol, _ = sp_cg(
+                    M_mat, rhs[:, k],
+                    x0=def_field[:, k],
+                    M=M_prec,
+                    rtol=1e-5,
+                    maxiter=icm_iter,
+                )
+                if np.all(np.isfinite(sol)):
+                    def_field[:, k] = sol
 
         # ------------------------------------------------------------
         # Annealing: halve sigma every period_sigma iterations
@@ -606,6 +660,9 @@ def nonrigid_icp_multires(
     use_tgd: bool = True,
     tgd_n_seeds: int = 200,
     sigma_tgd: float = 0.5,
+    use_rkhs: bool = True,
+    rkhs_radius: float | None = None,
+    rkhs_lambda: float = 0.01,
     verbose: bool = True,
 ) -> np.ndarray:
     """Multi-resolution non-rigid EM-ICP surface registration.
@@ -856,6 +913,9 @@ def nonrigid_icp_multires(
             tgd_ref=tgd_ref_arr,
             sigma_tgd=sigma_tgd,
             symmetric=symmetric,
+            use_rkhs=use_rkhs,
+            rkhs_radius=rkhs_radius,
+            rkhs_lambda=rkhs_lambda,
             verbose=verbose,
         )
 
