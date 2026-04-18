@@ -1,7 +1,11 @@
 # `clarcs nlregister` — non-rigid surface registration
 
-Non-rigidly register a moving surface onto a reference using EM-ICP with a
-graph-Laplacian regularisation on the deformation field.
+Non-rigidly register a moving surface onto a reference using EM-ICP with three
+algorithmic improvements over the baseline (Combès & Prima 2019, CVIU):
+
+1. **Symmetric correspondences** (Reg2) — prevents many-to-one mappings
+2. **TGD shape prior** (Reg3) — penalises cross-sulcus matches via geodesic depth
+3. **RKHS M-step** — Wu C4 kernel replaces graph-Laplacian for topology-independent regularisation
 
 ---
 
@@ -13,98 +17,135 @@ clarcs nlregister INPUT REF [OUTPUT] [--deformation FIELD] [options]
 
 **Arguments and options:**
 
-| Argument / Flag | Description |
-|---|---|
-| `INPUT` | Moving surface (any supported format) |
-| `REF` | Reference surface |
-| `OUTPUT` | Warped output surface. Defaults to `<INPUT_STEM>-nlregistered<EXT>` |
-| `--deformation FIELD` | Save the per-vertex deformation field to this VTK file (VECTORS point data) |
-| `--sigma F` | Initial bandwidth of the correspondence kernel — **auto-estimated if omitted** |
-| `--beta F` | Regularisation weight — higher = smoother field (default: `100.0`) |
-| `--dist-cutoff F` | Search radius for candidate correspondences — **auto-estimated if omitted** |
-| `--max-iter N` | Number of outer EM iterations (default: `80`) |
-| `--icm-iter N` | Jacobi ICM steps per outer iteration (default: `120`) |
-| `--period-sigma N` | Halve sigma every N iterations — **auto-estimated if omitted** |
-| `--sigma-min F` | Annealing floor for sigma (default: `0.1`) |
-| `--e-chunk N` | Vertices per KDTree batch in the E-step (default: `2000`). Reduce to lower peak RAM. |
-| `-q / --quiet` | Suppress all output |
-
-### Auto-estimation of sigma, dist_cutoff and period_sigma
-
-When `--sigma`, `--dist-cutoff` or `--period-sigma` are omitted, the command
-subsamples 2 000 vertices from the moving surface, queries their nearest
-neighbour on the reference, and derives the three parameters from the resulting
-distance distribution:
-
-| Parameter | Formula | Rationale |
+| Argument / Flag | Default | Description |
 |---|---|---|
-| `sigma` | $\tilde{d}_{50}$ — median NN distance | At $\sigma$ = median gap, roughly half the point pairs have weight $\geq e^{-1} \approx 0.37$: broad but informative correspondences to start with. |
-| `dist_cutoff` | $\max\!\bigl(\tilde{d}_{99} \times 1.5,\; \sigma \times 3\bigr)$ | The 99th-percentile covers near-outlier points; ×1.5 adds a safety margin. The $3\sigma$ floor ensures the search radius is always meaningful relative to the kernel width. |
-| `period_sigma` | $\bigl\lfloor \text{max\_iter} / \lceil \log_2(\sigma / \sigma_{\min}) \rceil \bigr\rfloor$ | Computes the number of halvings needed to bring $\sigma$ from its initial value down to $\sigma_{\min}$, then spreads them evenly across the outer iterations. |
+| `INPUT` | — | Moving surface (any supported format) |
+| `REF` | — | Reference surface |
+| `OUTPUT` | auto | Warped output. Defaults to `<INPUT_STEM>-nlregistered<EXT>` |
+| `--deformation FIELD` | — | Save per-vertex deformation field to this VTK file |
+| `--sigma F` | auto | Initial Gaussian kernel bandwidth [mm] |
+| `--beta F` | auto | Laplacian regularisation weight (used only with `--no-rkhs`) |
+| `--dist-cutoff F` | auto | Correspondence search radius [mm] |
+| `--max-iter N` | `80` | Outer EM iterations |
+| `--icm-iter N` | `50` | Max CG iterations per outer iteration |
+| `--period-sigma N` | auto | Halve sigma every N iterations |
+| `--sigma-min F` | auto | Annealing floor for sigma |
+| `--outlier-weight F` | `0.1` | Prior probability of outlier vertex (CPD-style) |
+| `--normal-min-dot F` | `0.0` | Min source/reference normal dot-product (0=same hemisphere) |
+| `--n-levels N` | auto | Resolution levels (1=single-res) |
+| `--coarsest-n N` | `2000` | Target vertex count at coarsest level |
+| `--beta-coarse-factor F` | `1.0` | Per-level beta multiplier toward coarser levels |
+| `--e-chunk N` | `2000` | Vertices per KDTree batch (lower = less RAM) |
+| `--no-symmetric` | off | Disable symmetric correspondences (A+B) |
+| `--no-tgd` | off | Disable TGD geodesic shape prior |
+| `--no-rkhs` | off | Use Laplacian M-step instead of RKHS Wu kernel |
+| `--rkhs-lambda F` | `0.01` | RKHS regularisation weight |
+| `-q / --quiet` | — | Suppress all output |
 
-where $\tilde{d}_p$ denotes the $p$-th percentile of the nearest-neighbour
-distances measured from the subsample to the reference.
-
-The auto-estimated values are printed at the start of the run (unless `--quiet`)
-so they can be reused or overridden in subsequent calls.
+All registration parameters (`sigma`, `dist-cutoff`, `period-sigma`, `beta`,
+`sigma-min`, `n-levels`) are **auto-estimated from the surfaces** when omitted.
 
 ---
 
 ## Method
 
-The algorithm is a non-rigid EM-ICP variant where the unknown is a
-per-vertex deformation field $d_i \in \mathbb{R}^3$ (one vector per vertex of
-the moving surface, initialised to zero).
+The algorithm is a non-rigid EM-ICP variant.  The unknown is a per-vertex
+deformation field $d_i \in \mathbb{R}^3$ initialised to zero.
 
-**E-step** — doubly-stochastic fuzzy correspondences
+### E-step — Gaussian kernel + symmetric correspondences + TGD prior
 
 For each transformed point $T_i = x_i + d_i$, candidate reference points
-$y_j$ within radius $r$ with a compatible normal ($n_i \cdot m_j \geq 0$)
-receive a weight:
+$y_j$ within radius $r$ with compatible normal ($n_i \cdot m_j \geq \delta$)
+receive a Gaussian weight:
 
-$$w_{ij} = \exp\!\left(-\|T_i - y_j\| / \sigma\right)$$
+$$w_{ij} = \exp\!\left(-\frac{\|T_i - y_j\|^2}{2\sigma^2}\right) \cdot \pi_{ij}$$
 
-The correspondence matrix is doubly normalised (row sums *and* column sums),
-which symmetrises the matching and suppresses outliers.  The resulting fuzzy
-target $\bar{y}_i$ is the weighted barycentre of the matched reference points.
+where $\pi_{ij} = \exp\!\left(-\frac{|\mathrm{TGD}_i - \mathrm{TGD}_j|^2}{2\sigma_{\mathrm{tgd}}^2}\right)$
+is the **TGD shape prior** (disabled with `--no-tgd`).  TGD (Total Geodesic
+Distance) is a scalar per vertex that encodes sulcal depth: high on gyral
+crests, low in deep sulci.  The prior down-weights matches between vertices at
+different depths, reducing cross-sulcus false correspondences.
 
-**M-step** — Jacobi ICM
+**Symmetric correspondences** (disabled with `--no-symmetric`):
 
-Minimises the sum of a data term and a graph-Laplacian regulariser:
+Instead of row-normalising alone, the combined weight is
 
-$$E = \sum_i W_i \|x_i + d_i - \bar{y}_i\|^2 + \beta \sum_{(i,j)\in\mathcal{E}} \|d_i - d_j\|^2$$
+$$\tilde{w}_{ij} = w_{ij} / s^R_i + w_{ij} / s^C_j$$
 
-The closed-form Jacobi update (repeated `icm_iter` times) is:
+where $s^R_i = \sum_j w_{ij}$ and $s^C_j = \sum_i w_{ij}$ are the row and
+column sums.  This prevents multiple moving vertices from collapsing onto the
+same reference vertex.
 
-$$d_i \leftarrow \frac{W_i(\bar{y}_i - x_i) + \beta \sum_{j \in \mathcal{N}_i} d_j}{\beta\,|\mathcal{N}_i| + W_i}$$
+**Outlier term** (CPD-style, $\sigma$-invariant):
 
-where $\mathcal{N}_i$ is the set of mesh-edge neighbours of $i$ and
-$W_i = \sum_j \tilde{w}_{ij}$ is the total correspondence weight.
+$$W_i = \frac{\sum_j \tilde{w}_{ij}}{\sum_j \tilde{w}_{ij} + c},
+\quad c = w_{\mathrm{out}} \cdot M/N$$
 
-**Annealing** — $\sigma$ is halved every `period_sigma` iterations, sharpening
-the correspondences as the field converges.
+The fuzzy target: $\bar{y}_i = \sum_j \tilde{w}_{ij}\,y_j / \sum_j \tilde{w}_{ij}$.
 
-Vertex normals are computed automatically from the input mesh via VTK.
-The mesh adjacency graph is derived from the polygon connectivity of the moving
-surface.
+### M-step — RKHS Wu kernel (or Laplacian fallback)
+
+**RKHS mode** (default, disable with `--no-rkhs`):
+
+The deformation is expressed as $d = K\alpha$ where $K$ is a sparse kernel
+matrix with the Wu C4 compactly-supported kernel:
+
+$$K_{ij} = \left(1 - \frac{r_{ij}}{b}\right)^4\!\left(\frac{4r_{ij}}{b} + 1\right)
+\cdot \mathbf{1}_{r_{ij} < b}, \quad r_{ij} = \|x_i - x_j\|$$
+
+$K$ is computed once on the original moving-mesh positions ($b = 8\sigma_\mathrm{min}$).
+The M-step solves a symmetric sparse system by CG:
+
+$$\bigl(\mathrm{diag}(W) \cdot K + \lambda I\bigr)\,\alpha = \mathrm{diag}(W)\,(\bar{y} - x)$$
+
+then applies $d = K\alpha$.  The RKHS norm $\alpha^\top K \alpha$ provides
+smooth, topology-independent regularisation that scales with point density.
+
+**Laplacian mode** (`--no-rkhs`):
+
+$$\bigl(\mathrm{diag}(W + \beta|\mathcal{N}_i|) - \beta A\bigr)\,d_{:,k} = W \cdot (\bar{y} - x)_{:,k}$$
+
+### Annealing
+
+$\sigma$ is halved every `period_sigma` iterations down to `sigma_min`.
+
+### Multi-resolution
+
+A coarse-to-fine hierarchy of decimated moving meshes is built (unless
+`n-levels=1`).  Registration runs from the coarsest level to the finest,
+warm-starting each finer level from the interpolated coarser deformation
+(inverse-distance-weighted).  TGD and the RKHS kernel are computed once on
+the finest mesh and interpolated to coarser levels.
+
+---
+
+## Benchmark (endocranium_mni_pial 10k, synthetic deformation)
+
+| Configuration | RMS after | Improvement | Time |
+|---|---|---|---|
+| BCPD (Nyström C++) | 3.82 mm | 37.9 % | 1.7 s |
+| clarcs baseline | 3.89 mm | 35.7 % | 80 s |
+| + Symmetric (Reg2) | 2.37 mm | 62.8 % | 74 s |
+| + TGD prior (Reg3) | 2.36 mm | 62.9 % | 83 s |
+| + RKHS M-step | **0.99 mm** | **84.0 %** | 97 s |
 
 ---
 
 ## Examples
 
 ```bash
-# Basic registration
+# Basic registration (all improvements enabled by default)
 clarcs nlregister target.vtk reference.vtk registered.vtk
 
 # Also save the deformation field for ParaView visualisation
 clarcs nlregister target.vtk reference.vtk registered.vtk \
                   --deformation field.vtk
 
-# Fewer iterations for a quick preview
-clarcs nlregister target.vtk reference.vtk --max-iter 20 --icm-iter 60
+# Faster preview: fewer iterations, disable TGD computation
+clarcs nlregister target.vtk reference.vtk --max-iter 20 --no-tgd
 
-# Stronger regularisation (smoother deformation)
-clarcs nlregister target.vtk reference.vtk --beta 500
+# Disable all new features (baseline Laplacian EM-ICP)
+clarcs nlregister target.vtk reference.vtk --no-symmetric --no-tgd --no-rkhs
 ```
 
 ### Typical full pipeline
@@ -116,14 +157,6 @@ clarcs nlregister target-rcs.vtk  reference.vtk  target-registered.vtk \
                   --deformation target-deformation.vtk
 ```
 
-The helper script `data/run_pipeline.py` automates this sequence on the
-bundled test surfaces:
-
-```bash
-python data/generate_samples.py          # build test pairs (once)
-python data/run_pipeline.py  results/    # run end-to-end, write to results/
-```
-
 ---
 
 ## Output files
@@ -133,37 +166,26 @@ python data/run_pipeline.py  results/    # run end-to-end, write to results/
 | `OUTPUT` | Warped moving surface (same connectivity as INPUT) |
 | `FIELD` | Original surface + deformation vectors as VTK VECTORS point data |
 
-The deformation field VTK file can be visualised in ParaView with the
-*Warp By Vector* or *Glyph* filter applied to the VECTORS array.
-
 ---
 
 ## Python API
 
 ```python
-from pyclarcs.io import load_surface_with_normals, save_surface, save_deformation_vtk
-from pyclarcs.mesh import adjacency_csr
-from pyclarcs.nonrigid import nonrigid_icp, apply_deformation, estimate_registration_params
+from pyclarcs.io import load_surface, load_surface_with_normals, save_surface
+from pyclarcs.nonrigid import nonrigid_icp_multires, apply_deformation
 
 mov_pts, mov_poly, mov_normals = load_surface_with_normals("target.vtk")
-ref_pts, _,        ref_normals = load_surface_with_normals("reference.vtk")
+ref_pts, ref_poly              = load_surface("reference.vtk")
+_, _,    ref_normals           = load_surface_with_normals("reference.vtk")
 
-# Auto-estimate parameters from the surfaces (optional — pass explicit values
-# to override any of the three).
-params = estimate_registration_params(mov_pts, ref_pts)
-print(params)
-# → {"sigma": 3.6, "dist_cutoff": 20.4, "period_sigma": 13}
-
-adj = adjacency_csr(mov_poly, len(mov_pts))
-
-def_field = nonrigid_icp(
+def_field = nonrigid_icp_multires(
     mov_pts, mov_normals,
     ref_pts, ref_normals,
-    adj,
-    **params,          # unpack auto-estimated params; add beta/max_iter/... as needed
+    mov_poly, ref_poly,   # ref_poly enables mesh-based TGD for reference
+    # All algorithmic improvements are on by default:
+    # symmetric=True, use_tgd=True, use_rkhs=True
 )
 
 warped = apply_deformation(mov_pts, def_field)
 save_surface("registered.vtk", warped, mov_poly)
-save_deformation_vtk("field.vtk", mov_pts, mov_poly, def_field)
 ```

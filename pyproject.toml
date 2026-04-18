@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyclarcs"
-version = "0.1.0"
-description = "Automatic symmetry plane estimation for 3D surfaces (endocranial and others)"
+version = "0.2.0"
+description = "Non-rigid EM-ICP surface registration with symmetric correspondences, TGD prior and RKHS M-step"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

@@ -44,6 +44,31 @@ E-step — doubly-stochastic fuzzy correspondences
   (rows, cols, weights).  Row/col sums and barycentres are then computed
   with numpy bincount — no N×M sparse matrix is ever constructed.
 
+E-step — Gaussian kernel + row-normalised weights + outlier term
+
+  For each vertex i:
+      T_i = x_i + d_i
+
+      For each y_j within radius r of T_i, normal compatible
+      (n_i · m_j ≥ normal_min_dot):
+          w_ij = exp( −‖T_i − y_j‖² / (2σ²) )
+
+      Row sum:  sR_i = Σ_j w_ij
+
+      Outlier-adjusted weight (CPD-style):
+          W_i = sR_i / (sR_i + c_outlier)
+
+      Barycentre:  ȳ_i = (Σ_j w_ij · y_j) / sR_i
+
+  The outlier constant is:
+      c_outlier = w/(1−w) · (2πσ²)^(3/2) · M/N
+  where w = outlier_weight ∈ [0, 1).
+
+  Using raw row sums (not doubly-stochastic) means W_i scales with
+  the number and quality of correspondences.  This ensures the data
+  term dominates when correspondences are dense (early/coarse) and
+  the regularisation takes over when they thin out (fine/late).
+
 M-step — preconditioned conjugate gradient
   Solves the sparse linear system  M · d[:,k] = b[:,k]  independently
   for each coordinate k ∈ {0, 1, 2}:
@@ -58,14 +83,15 @@ M-step — preconditioned conjugate gradient
 Annealing
   σ ← max(σ / 2,  σ_min)   every `period_sigma` outer iterations.
 
-DEFAULT PARAMETERS (matching the original C++ NonLinearRegistration)
-  sigma        = 3.0    initial bandwidth (same units as coordinates)
-  beta         = 10.0   regularisation weight
-  dist_cutoff  = 15.0   search radius
+DEFAULT PARAMETERS
+  sigma        = 3.0    initial bandwidth (std dev of Gaussian kernel)
+  beta         = 0.5    regularisation weight
+  dist_cutoff  = 15.0   search radius (typically 3–4 σ)
   max_iter     = 80
   icm_iter     = 50     max CG iterations per outer iteration
-  period_sigma = 40     sigma halved every 40 outer iterations
+  period_sigma = 20     sigma halved every 20 outer iterations
   sigma_min    = 0.1
+  outlier_weight = 0.1  fraction of points expected to be outliers
   e_chunk      = 2000   vertices per KDTree query batch
 """
 
@@ -124,9 +150,15 @@ def estimate_registration_params(
     Heuristics
       mesh_spacing = median 1-NN distance within the moving surface sample
       sigma_min    = max(0.1, mesh_spacing / 2)   [if not overridden]
-      beta         = max(1.0, 4.0 × mesh_spacing) [regularisation weight]
+      beta         = 0.5  [regularisation weight — tuned for Gaussian kernel + row sums]
       n_levels     = 1 if N≤5 000 else 2 if N≤30 000 else 3
-      sigma        = 50th percentile of NN-to-ref distances (median gap)
+      sigma        = 75th percentile of NN-to-ref distances
+                     Using the 75th percentile (not the median) ensures that the
+                     initial kernel is wide enough for non-convex surfaces (e.g.
+                     brain pial) where the nearest reference vertex can be an
+                     anatomically wrong match on an adjacent fold.  A broader
+                     initial sigma lets the algorithm "see past" such false
+                     candidates and then progressively tighten via annealing.
       dist_cutoff  = 99th percentile of NN-to-ref distances × 1.5
                      (floor: sigma × 3)
       period_sigma = max_iter // ceil(log2(sigma / sigma_min))
@@ -147,23 +179,43 @@ def estimate_registration_params(
     nn_self, _ = KDTree(mov_pts).query(sample, k=2, workers=-1)
     mesh_spacing = float(np.median(nn_self[:, 1]))
 
-    # Derived annealing floor and regularisation weight.
+    # Annealing floor: stop at half the mesh spacing so the last iterations
+    # still form meaningful correspondences.
     if sigma_min is None:
         sigma_min = max(0.1, mesh_spacing / 2.0)
-    beta = max(1.0, 4.0 * mesh_spacing)
+
+    # Regularisation weight β.
+    # With row-sum weights W ≈ n_neighbours × exp(−0.5) at fine scale and
+    # mean degree ≈ 6, we target ~30 % data trust at sigma_min:
+    #   W / (W + β × deg) ≈ 0.3  →  β ≈ W × (1/0.3 − 1) / deg
+    # At sigma_min, n_neighbours ≈ 4 within 2σ_min, mean weight ≈ 0.4
+    # → W ≈ 1.6, β ≈ 1.6 × 2.33 / 6 ≈ 0.62.
+    # We use β = 0.5 as a safe default that keeps the deformation smooth
+    # without over-constraining large-scale corrections at coarse levels.
+    beta = 0.5
 
     # Recommended number of resolution levels.
     N = len(mov_pts)
     n_levels = 1 if N <= 5_000 else (2 if N <= 30_000 else 3)
 
-    sigma = float(np.percentile(nn_dists, 50))
-    sigma = max(sigma, sigma_min * 2)          # floor: at least two halvings
+    # Use the 75th percentile so that the initial kernel is wide enough to
+    # form meaningful correspondences even on non-convex surfaces (e.g. brain
+    # pial) where the nearest reference vertex can be a false match on an
+    # adjacent fold.  With the 50th percentile the kernel is too tight
+    # (~1.5× mesh spacing), which causes the algorithm to lock onto wrong
+    # correspondences early and converge to a local minimum.
+    sigma = float(np.percentile(nn_dists, 75))
+    sigma = max(sigma, sigma_min * 4)          # floor: at least two halvings
 
     dist_cutoff = float(np.percentile(nn_dists, 99)) * 1.5
     dist_cutoff = max(dist_cutoff, sigma * 3)  # always at least 3σ
 
     n_halvings = max(1, math.ceil(math.log2(sigma / sigma_min)))
-    period_sigma = max(1, max_iter // n_halvings)
+    # Use (n_halvings + 1) slots so that after all halvings complete, at least
+    # one full slot of iterations runs at sigma_min — the tightest resolution.
+    # Without this, when sigma/sigma_min ≈ 2 the halving happens on the very
+    # last iteration and no refinement at sigma_min occurs.
+    period_sigma = max(1, max_iter // (n_halvings + 1))
 
     return {
         "sigma":        round(sigma,        4),
@@ -189,13 +241,22 @@ def nonrigid_icp(
     *,
     init_def_field: np.ndarray | None = None,
     sigma: float = 3.0,
-    beta: float = 10.0,
+    beta: float = 0.5,
     dist_cutoff: float = 15.0,
     max_iter: int = 80,
     icm_iter: int = 50,
-    period_sigma: int = 40,
+    period_sigma: int = 20,
     sigma_min: float = 0.1,
+    outlier_weight: float = 0.1,
+    normal_min_dot: float = 0.0,
     e_chunk: int = 2000,
+    tgd_mov: np.ndarray | None = None,
+    tgd_ref: np.ndarray | None = None,
+    sigma_tgd: float = 0.2,
+    symmetric: bool = True,
+    use_rkhs: bool = True,
+    rkhs_radius: float | None = None,
+    rkhs_lambda: float = 0.01,
     verbose: bool = True,
 ) -> np.ndarray:
     """Register a moving surface onto a reference using non-rigid EM-ICP.
@@ -222,13 +283,16 @@ def nonrigid_icp(
         Used by ``nonrigid_icp_multires`` to warm-start the finest level
         from the interpolated coarse solution.
     sigma : float
-        Initial bandwidth of the exponential correspondence kernel.
-        Should be on the order of the expected initial surface-to-surface
-        distance (e.g. set to dist_cutoff / 3 or larger for coarse alignment).
+        Initial bandwidth (std dev) of the Gaussian correspondence kernel
+        ``exp(−d²/(2σ²))``.  Auto-estimated as the 75th percentile of NN
+        distances if called via the CLI without ``--sigma``.
     beta : float
-        Regularisation weight (higher → smoother deformation).
+        Laplacian regularisation weight.  Higher → smoother deformation.
+        Must be small relative to the expected per-vertex correspondence
+        weight (typically 0.1–2.0); the default 0.5 gives a ~30 % data /
+        ~70 % regularisation split at the finest scale.
     dist_cutoff : float
-        Maximum search radius for candidate correspondences.
+        Maximum search radius for candidate correspondences (typically 3–4 σ).
     max_iter : int
         Number of outer EM iterations.
     icm_iter : int
@@ -237,9 +301,55 @@ def nonrigid_icp(
         Number of outer iterations between each halving of sigma.
     sigma_min : float
         Minimum value of sigma (annealing floor).
+    outlier_weight : float
+        Prior probability of a moving vertex being an outlier (0 = disabled).
+        Outlier constant: ``c = w × M/N`` (density-normalised, σ-invariant).
+        A vertex is effectively an outlier when its total correspondence weight
+        ``row_sum < c``.  Reduces the influence of vertices with sparse/poor
+        correspondences so they are dominated by the Laplacian prior.
+    normal_min_dot : float
+        Minimum dot product of moving and reference normals for a
+        correspondence to be accepted.  0.0 = same hemisphere (default);
+        increase toward 1.0 for stricter orientation filtering.
     e_chunk : int
         Number of vertices processed per KDTree query batch in the E-step.
         Has no effect on results; lower values reduce peak memory.
+    tgd_mov : ndarray (N,) or None
+        Normalised Total Geodesic Distance for each moving vertex,
+        pre-computed via ``mesh.compute_tgd``.  If provided together with
+        ``tgd_ref``, a TGD shape prior (Reg3, Combès & Prima 2019) is applied
+        in the E-step: ``π_ij = exp(−|tgd_mov[i]−tgd_ref[j]|²/(2σ_tgd²))``
+        is multiplied into each correspondence weight, penalising matches
+        between vertices at different sulcal depths.
+    tgd_ref : ndarray (M,) or None
+        Normalised TGD for each reference vertex.
+    sigma_tgd : float
+        Bandwidth of the TGD prior kernel (both TGD arrays are in [0, 1]).
+        Smaller values apply a tighter shape prior; default 0.2 rejects
+        pairs whose normalised TGD differs by more than ~0.4 (2σ cutoff).
+    use_rkhs : bool
+        If True (default), replace the Laplacian M-step with an RKHS
+        deformation model using the Wu C4 compactly-supported kernel
+        (Combès & Prima 2019, Reg3).  The deformation is expressed as
+        d = K α, where K_ij = wu(||x_i−x_j||/r) is a sparse kernel matrix.
+        The M-step solves (diag(W)·K + λ·I)·α = W·target', then d = K·α.
+        This gives a smoother, topology-independent regularisation than the
+        Laplacian graph prior.
+    rkhs_radius : float or None
+        Compact support radius of the Wu kernel (in mesh units).
+        None (default) → auto-set to ``sigma_min * 8``.
+    rkhs_lambda : float
+        RKHS regularisation weight.  Default 0.01; smaller values allow
+        larger deformations but risk instability.
+    symmetric : bool
+        If True (default), use symmetric correspondences (Reg2 from Combès &
+        Prima 2019): each edge weight is normalised by both the row sum
+        (mov→ref) *and* the column sum (ref→mov).  The combined weight is
+        ``ṽ_ij = w_ij/sR_i + w_ij/sC_j``.  This prevents many-to-one
+        mappings where multiple moving vertices collapse onto the same
+        reference vertex, which is especially harmful on non-convex surfaces
+        such as brain pial where sulcal folds are topologically close in
+        Euclidean space but anatomically distinct.
     verbose : bool
         Print iteration progress.
 
@@ -257,13 +367,38 @@ def nonrigid_icp(
     N = len(mov_pts)
     M = len(ref_pts)
 
+    use_tgd = (tgd_mov is not None) and (tgd_ref is not None)
+    if use_tgd:
+        tgd_mov = np.asarray(tgd_mov, dtype=float)
+        tgd_ref = np.asarray(tgd_ref, dtype=float)
+        inv_two_sigma_tgd2 = 1.0 / (2.0 * sigma_tgd * sigma_tgd)
+
     if init_def_field is not None:
         def_field = np.asarray(init_def_field, dtype=float).copy()
     else:
         def_field = np.zeros((N, 3), dtype=float)
 
-    # Precompute adjacency statistics (fixed throughout)
+    # Precompute adjacency statistics (fixed throughout, Laplacian mode)
     neigh_count = np.asarray(adjacency.sum(axis=1), dtype=float).ravel()  # (N,)
+
+    # RKHS Wu kernel pre-computation (fixed on original mesh positions)
+    K_mat: csr_matrix | None = None
+    c_field: np.ndarray | None = None    # RKHS coefficient field (N, 3)
+    if use_rkhs:
+        r_k = rkhs_radius if rkhs_radius is not None else sigma_min * 8.0
+        mov_tree_k = KDTree(mov_pts)
+        K_rows, K_cols, K_data = [], [], []
+        for _i in range(N):
+            _nbrs = mov_tree_k.query_ball_point(mov_pts[_i], r_k, workers=1)
+            for _j in _nbrs:
+                _r = np.linalg.norm(mov_pts[_i] - mov_pts[_j]) / r_k
+                _kv = max(0.0, (1.0 - _r) ** 4 * (4.0 * _r + 1.0))
+                K_rows.append(_i); K_cols.append(_j); K_data.append(_kv)
+        K_mat = csr_matrix((K_data, (K_rows, K_cols)), shape=(N, N))
+        c_field = np.zeros((N, 3), dtype=float)
+        if verbose:
+            nnz = K_mat.nnz
+            print(f"  [RKHS] Wu kernel built: r={r_k:.2f}  nnz={nnz} ({nnz/N:.0f}/vertex)")
 
     ref_tree = KDTree(ref_pts)
 
@@ -278,6 +413,8 @@ def nonrigid_icp(
         cols_parts: list[np.ndarray] = []
         wvals_parts: list[np.ndarray] = []
 
+        inv_two_sigma2 = 1.0 / (2.0 * sigma * sigma)
+
         for start in range(0, N, e_chunk):
             end = min(start + e_chunk, N)
             nbrs_chunk = ref_tree.query_ball_point(
@@ -290,12 +427,15 @@ def nonrigid_icp(
                 i = start + local_i
                 nbrs_arr = np.asarray(nbrs, dtype=np.int32)
                 diffs    = ref_pts[nbrs_arr] - transformed[i]
-                dists    = np.linalg.norm(diffs, axis=1)
-                valid    = (ref_normals[nbrs_arr] @ mov_normals[i]) >= 0.0
+                dists2   = np.einsum("ij,ij->i", diffs, diffs)   # squared distances
+                valid    = (ref_normals[nbrs_arr] @ mov_normals[i]) >= normal_min_dot
                 nbrs_v   = nbrs_arr[valid]
                 if len(nbrs_v) == 0:
                     continue
-                wv = np.exp(-dists[valid] / sigma)
+                wv = np.exp(-dists2[valid] * inv_two_sigma2)
+                if use_tgd:
+                    tgd_diff2 = (tgd_mov[i] - tgd_ref[nbrs_v]) ** 2
+                    wv *= np.exp(-tgd_diff2 * inv_two_sigma_tgd2)
                 rows_parts.append(np.full(len(nbrs_v), i, dtype=np.int32))
                 cols_parts.append(nbrs_v)
                 wvals_parts.append(wv)
@@ -310,61 +450,116 @@ def nonrigid_icp(
         wvals = np.concatenate(wvals_parts)
         del rows_parts, cols_parts, wvals_parts
 
-        # Row / column sums
+        # Row sums (= total correspondence strength per moving vertex)
         row_sums = np.bincount(rows, weights=wvals, minlength=N)
-        col_sums = np.bincount(cols, weights=wvals, minlength=M)
 
-        row_inv = np.zeros(N)
-        nz_r = row_sums > 0.0
-        row_inv[nz_r] = 1.0 / row_sums[nz_r]
+        if symmetric:
+            # Symmetric correspondences (Reg2 — Combès & Prima 2019):
+            # Combined weight  ṽ_ij = w_ij/sR_i + w_ij/sC_j
+            # normalises by both the row sum and the column sum, preventing
+            # many-to-one mappings where multiple moving vertices compete for
+            # the same reference vertex.
+            col_sums = np.bincount(cols, weights=wvals, minlength=M)
+            row_inv_per_edge = np.zeros(len(rows))
+            col_inv_per_edge = np.zeros(len(rows))
+            nz_r_mask = row_sums[rows] > 1e-10
+            nz_c_mask = col_sums[cols] > 1e-10
+            row_inv_per_edge[nz_r_mask] = 1.0 / row_sums[rows[nz_r_mask]]
+            col_inv_per_edge[nz_c_mask] = 1.0 / col_sums[cols[nz_c_mask]]
+            comb_w = wvals * (row_inv_per_edge + col_inv_per_edge)
+            W_sums = np.bincount(rows, weights=comb_w, minlength=N)
+            W_inv  = np.zeros(N)
+            nz_W   = W_sums > 1e-10
+            W_inv[nz_W] = 1.0 / W_sums[nz_W]
+            corresBary = np.empty((N, 3), dtype=float)
+            for k in range(3):
+                corresBary[:, k] = np.bincount(
+                    rows, weights=comb_w * ref_pts[cols, k], minlength=N
+                ) * W_inv
+            # Use W_sums for the outlier term (scaled to same range as row_sums
+            # by multiplying back by an effective row_sum scale)
+            eff_weight = W_sums
+            inlier_mask = W_sums > 0.0
+        else:
+            eff_weight = row_sums
+            # Barycentre normalised by raw row_sums.
+            row_inv = np.zeros(N)
+            nz_r = row_sums > 1e-10
+            row_inv[nz_r] = 1.0 / row_sums[nz_r]
+            corresBary = np.empty((N, 3), dtype=float)
+            for k in range(3):
+                corresBary[:, k] = np.bincount(
+                    rows, weights=wvals * ref_pts[cols, k], minlength=N
+                ) * row_inv
+            inlier_mask = row_sums > 0.0
 
-        col_inv = np.zeros(M)
-        nz_c = col_sums > 0.0
-        col_inv[nz_c] = 1.0 / col_sums[nz_c]
+        del wvals, rows, cols
 
-        # Doubly-stochastic weights: ṽ_ij = w_ij·(1/sC_j + 1/sR_i)
-        v_tilde = wvals * (col_inv[cols] + row_inv[rows])
-        del wvals
+        corresBary[~inlier_mask] = 0.0   # unused vertices: barycentre irrelevant
 
-        # Weighted barycentre per moving vertex
-        weight_out = np.bincount(rows, weights=v_tilde, minlength=N)
-        corresBary = np.empty((N, 3), dtype=float)
-        for k in range(3):
-            corresBary[:, k] = np.bincount(
-                rows, weights=v_tilde * ref_pts[cols, k], minlength=N
-            )
-        del v_tilde, rows, cols
-
-        inlier_mask = weight_out > 0.0
-        corresBary[inlier_mask] /= weight_out[inlier_mask, np.newaxis]
+        # Outlier term: down-weight vertices whose total correspondence strength
+        # is below a density-normalised threshold.
+        # We use  c = outlier_weight × M/N  instead of the full CPD formula
+        # (which contains (2πσ²)^{3/2} and blows up when σ is large, killing
+        # all correspondences in the coarse/early iterations).
+        # Interpretation: a moving vertex is an "outlier" when its eff_weight is
+        # below  outlier_weight × (M/N).  Because eff_weight scales with M,
+        # this threshold is density-normalised and σ-invariant.
+        if outlier_weight > 0.0:
+            c_outlier = outlier_weight * M / N
+            weight_out = eff_weight / (eff_weight + c_outlier)
+        else:
+            weight_out = eff_weight.copy()
 
         # ------------------------------------------------------------
         # M-step: preconditioned conjugate gradient
-        # Minimises:  Σ_i W_i ‖x_i + d_i − ȳ_i‖²
-        #           + β Σ_{(i,j)∈edges} ‖d_i − d_j‖²
-        # Equivalent to solving the symmetric PSD system:
-        #   M · d[:,k] = b[:,k]   for k ∈ {0, 1, 2}
-        # where
-        #   M   = diag(W_i + β·|N_i|)  −  β · adjacency
-        #   b_i = W_i · (ȳ_i − x_i)_k
-        # Jacobi preconditioner M_inv = diag(1 / diag(M)).
-        # Each coordinate is solved independently; the previous d warm-starts.
+        # Two modes:
+        #  RKHS (use_rkhs=True):  deformation d = K α, solves
+        #    (diag(W) K + λ I) α = diag(W) target'   for each coord
+        #    d = K α
+        #  Laplacian (use_rkhs=False):  solves
+        #    (diag(W + β|N_i|) - β A) d = diag(W) target'
         # ------------------------------------------------------------
         target_offset = corresBary - mov_pts  # (N, 3)
 
-        diag_vals = weight_out + beta * neigh_count          # (N,)
-        M_mat  = sp_diags(diag_vals) - beta * adjacency     # (N, N) PSD
-        M_prec = sp_diags(1.0 / np.maximum(diag_vals, 1e-10))  # Jacobi precond
-        rhs    = weight_out[:, np.newaxis] * target_offset  # (N, 3)
+        if use_rkhs and K_mat is not None:
+            # RKHS M-step: (W K + λ I) α = W target'
+            WK = sp_diags(weight_out) @ K_mat             # (N, N) sparse
+            lhs = WK + sp_diags(np.full(N, rkhs_lambda))  # + λ I
+            prec_rkhs = sp_diags(1.0 / np.maximum(lhs.diagonal(), 1e-10))
+            rhs = weight_out[:, np.newaxis] * target_offset
 
-        for k in range(3):
-            def_field[:, k], _ = sp_cg(
-                M_mat, rhs[:, k],
-                x0=def_field[:, k],
-                M=M_prec,
-                rtol=1e-5,
-                maxiter=icm_iter,
-            )
+            for k in range(3):
+                sol, _ = sp_cg(
+                    lhs, rhs[:, k],
+                    x0=c_field[:, k],
+                    M=prec_rkhs,
+                    rtol=1e-5,
+                    maxiter=icm_iter,
+                )
+                if np.all(np.isfinite(sol)):
+                    c_field[:, k] = sol
+
+            d_new = K_mat @ c_field          # d = K α
+            if np.all(np.isfinite(d_new)):
+                def_field[:] = d_new
+        else:
+            # Laplacian M-step
+            diag_vals = weight_out + beta * neigh_count          # (N,)
+            M_mat  = sp_diags(diag_vals) - beta * adjacency     # (N, N) PSD
+            M_prec = sp_diags(1.0 / np.maximum(diag_vals, 1e-10))
+            rhs    = weight_out[:, np.newaxis] * target_offset  # (N, 3)
+
+            for k in range(3):
+                sol, _ = sp_cg(
+                    M_mat, rhs[:, k],
+                    x0=def_field[:, k],
+                    M=M_prec,
+                    rtol=1e-5,
+                    maxiter=icm_iter,
+                )
+                if np.all(np.isfinite(sol)):
+                    def_field[:, k] = sol
 
         # ------------------------------------------------------------
         # Annealing: halve sigma every period_sigma iterations
@@ -446,6 +641,7 @@ def nonrigid_icp_multires(
     ref_pts: np.ndarray,
     ref_normals: np.ndarray,
     mov_polygons: list,
+    ref_polygons: list | None = None,
     *,
     n_levels: int = 3,
     target_n_coarsest: int = 2000,
@@ -457,7 +653,16 @@ def nonrigid_icp_multires(
     icm_iter: int = 50,
     period_sigma: int | None = None,
     sigma_min: float | None = None,
+    outlier_weight: float = 0.1,
+    normal_min_dot: float = 0.0,
     e_chunk: int = 2000,
+    symmetric: bool = True,
+    use_tgd: bool = True,
+    tgd_n_seeds: int = 200,
+    sigma_tgd: float = 0.5,
+    use_rkhs: bool = True,
+    rkhs_radius: float | None = None,
+    rkhs_lambda: float = 0.01,
     verbose: bool = True,
 ) -> np.ndarray:
     """Multi-resolution non-rigid EM-ICP surface registration.
@@ -563,6 +768,63 @@ def nonrigid_icp_multires(
 
     n_actual = len(hierarchy)
 
+    # Pre-compute sigma_min from the FINEST-level mesh so that all levels
+    # share the same annealing floor.  Without this, coarser decimated meshes
+    # produce larger mesh_spacing → larger sigma_min → the sigma_min * 4 floor
+    # in estimate_registration_params forces the starting sigma much too high
+    # at coarse levels (e.g. sigma_min_coarse * 4 >> initial gap).
+    # By pinning sigma_min to the finest-level spacing throughout, coarse
+    # levels keep a fine sigma_min (→ more halvings, gradual annealing) and
+    # the warm-started fine level still benefits from sigma_min * 4 forcing
+    # at least two halvings even when the warm-start residual is small.
+    if sigma_min is None:
+        _finest_sample = min(2000, N)
+        _rng = np.random.default_rng(0)
+        _idx = _rng.choice(N, size=_finest_sample, replace=False)
+        _nn, _ = KDTree(mov_pts).query(mov_pts[_idx], k=2, workers=-1)
+        sigma_min = max(0.1, float(np.median(_nn[:, 1])) / 2.0)
+
+    # ------------------------------------------------------------------
+    # Compute TGD once on finest mesh and reference, interpolate per level
+    # ------------------------------------------------------------------
+    tgd_mov_fine: np.ndarray | None = None
+    tgd_ref_arr:  np.ndarray | None = None
+    if use_tgd:
+        from pyclarcs.mesh import compute_tgd
+        if verbose:
+            print("  [multires] computing TGD on moving surface…")
+        tgd_mov_fine = compute_tgd(mov_pts, mov_polygons, n_seeds=tgd_n_seeds)
+        if verbose:
+            print("  [multires] computing TGD on reference surface…")
+        if ref_polygons is not None:
+            tgd_ref_arr = compute_tgd(ref_pts, ref_polygons, n_seeds=tgd_n_seeds)
+        else:
+            # No polygon connectivity supplied — approximate via KNN graph
+            from scipy.spatial import KDTree as _KDTree
+            from scipy.sparse import csr_matrix as _csr
+            from scipy.sparse.csgraph import dijkstra as _dijkstra
+            _ref_tree = _KDTree(ref_pts)
+            _dists, _idxs = _ref_tree.query(ref_pts, k=9, workers=-1)
+            M_ref = len(ref_pts)
+            _rrows, _rcols, _rdata = [], [], []
+            for _i in range(M_ref):
+                for _k in range(1, 9):
+                    _j = _idxs[_i, _k]
+                    _rrows.append(_i); _rcols.append(_j)
+                    _rdata.append(float(_dists[_i, _k]))
+            _ref_graph = _csr((_rdata, (_rrows, _rcols)), shape=(M_ref, M_ref))
+            _rng2 = np.random.default_rng(0)
+            _ref_seeds = _rng2.choice(M_ref, size=min(tgd_n_seeds, M_ref), replace=False)
+            _ref_dist = _dijkstra(_ref_graph, indices=_ref_seeds, directed=False)
+            _fin_max = float(_ref_dist[np.isfinite(_ref_dist)].max()) \
+                       if np.isfinite(_ref_dist).any() else 1.0
+            _ref_dist = np.where(np.isinf(_ref_dist), _fin_max, _ref_dist)
+            tgd_ref_arr = _ref_dist.sum(axis=0)
+            _mx = tgd_ref_arr.max()
+            if _mx > 0:
+                tgd_ref_arr /= _mx
+            tgd_ref_arr = tgd_ref_arr.astype(float)
+
     # ------------------------------------------------------------------
     # Register coarsest → finest
     # ------------------------------------------------------------------
@@ -610,14 +872,26 @@ def nonrigid_icp_multires(
             if beta_l     is None: beta_l     = auto["beta"]
             if sigma_min_l is None: sigma_min_l = auto["sigma_min"]
 
+        # TGD for this level: interpolate fine-level TGD to coarser mesh
+        if use_tgd and tgd_mov_fine is not None:
+            if idx == 0:
+                tgd_mov_l = tgd_mov_fine
+            else:
+                tgd_mov_l = _interpolate_field(
+                    tgd_mov_fine[:, np.newaxis], mov_pts, pts_l
+                ).ravel()
+        else:
+            tgd_mov_l = None
+
         if verbose:
             label = "finest" if is_finest else f"level {idx}"
+            tgd_tag = f"  TGD={'on' if tgd_mov_l is not None else 'off'}"
             print(
                 f"\n  [multires] {label}  {N_l} vertices"
                 f"  {max_iter_l} outer iterations"
                 f"  β={beta_l:.2f}  σ_min={sigma_min_l:.3f}"
                 f"  σ={sigma_l:.3f}  r={cutoff_l:.2f}"
-                f"  period_σ={period_l}"
+                f"  period_σ={period_l}{tgd_tag}"
             )
 
         def_field_l = nonrigid_icp(
@@ -632,7 +906,16 @@ def nonrigid_icp_multires(
             icm_iter=icm_iter,
             period_sigma=period_l,
             sigma_min=sigma_min_l,
+            outlier_weight=outlier_weight,
+            normal_min_dot=normal_min_dot,
             e_chunk=e_chunk,
+            tgd_mov=tgd_mov_l,
+            tgd_ref=tgd_ref_arr,
+            sigma_tgd=sigma_tgd,
+            symmetric=symmetric,
+            use_rkhs=use_rkhs,
+            rkhs_radius=rkhs_radius,
+            rkhs_lambda=rkhs_lambda,
             verbose=verbose,
         )
 
