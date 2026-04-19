@@ -337,7 +337,9 @@ def nonrigid_icp(
         Laplacian graph prior.
     rkhs_radius : float or None
         Compact support radius of the Wu kernel (in mesh units).
-        None (default) → auto-set to ``sigma_min * 8``.
+        None (default) → set by the caller (``nonrigid_icp_multires``)
+        to ``mesh_spacing * 2``, giving ~10 neighbours/vertex at any
+        resolution.  Fallback if called directly: ``sigma_min * 8``.
     rkhs_lambda : float
         RKHS regularisation weight.  Default 0.01; smaller values allow
         larger deformations but risk instability.
@@ -541,8 +543,16 @@ def nonrigid_icp(
                     c_field[:, k] = sol
 
             d_new = K_mat @ c_field          # d = K α
-            if np.all(np.isfinite(d_new)):
+            max_deform = dist_cutoff * 3.0
+            if np.all(np.isfinite(d_new)) and float(np.max(np.abs(d_new))) < max_deform:
                 def_field[:] = d_new
+            else:
+                # Unstable update: reset c_field so next CG starts from 0
+                # rather than the diverged state, preventing runaway growth.
+                _bad = float(np.max(np.abs(d_new))) if np.all(np.isfinite(d_new)) else float("nan")
+                if verbose:
+                    print(f"  iter {it+1}: RKHS M-step rejected (max|d|={_bad:.1f}, limit={max_deform:.1f})")
+                c_field[:] = 0.0
         else:
             # Laplacian M-step
             diag_vals = weight_out + beta * neigh_count          # (N,)
@@ -566,6 +576,11 @@ def nonrigid_icp(
         # ------------------------------------------------------------
         if (it + 1) % period_sigma == 0:
             sigma = max(sigma / 2.0, sigma_min)
+            # Reset RKHS coefficients: accumulated c_field from the previous
+            # sigma level is a poor warm-start after a halving and causes CG
+            # to diverge when the new rhs is much smaller in scale.
+            if use_rkhs and c_field is not None:
+                c_field[:] = 0.0
 
         if verbose:
             n_inliers = int(inlier_mask.sum())
@@ -883,15 +898,23 @@ def nonrigid_icp_multires(
         else:
             tgd_mov_l = None
 
+        # Per-level RKHS radius: 2× local mesh spacing → ~10 neighbours/vertex
+        # at any resolution.  mesh_spacing * 8 (previous default) gave ~160
+        # neighbours on coarse levels → near-dense K → CG divergence.
+        rkhs_radius_l = rkhs_radius
+        if use_rkhs and rkhs_radius_l is None:
+            rkhs_radius_l = auto["mesh_spacing"] * 2.0
+
         if verbose:
             label = "finest" if is_finest else f"level {idx}"
             tgd_tag = f"  TGD={'on' if tgd_mov_l is not None else 'off'}"
+            rkhs_tag = f"  rkhs_r={rkhs_radius_l:.2f}" if use_rkhs else ""
             print(
                 f"\n  [multires] {label}  {N_l} vertices"
                 f"  {max_iter_l} outer iterations"
                 f"  β={beta_l:.2f}  σ_min={sigma_min_l:.3f}"
                 f"  σ={sigma_l:.3f}  r={cutoff_l:.2f}"
-                f"  period_σ={period_l}{tgd_tag}"
+                f"  period_σ={period_l}{tgd_tag}{rkhs_tag}"
             )
 
         def_field_l = nonrigid_icp(
@@ -914,7 +937,7 @@ def nonrigid_icp_multires(
             sigma_tgd=sigma_tgd,
             symmetric=symmetric,
             use_rkhs=use_rkhs,
-            rkhs_radius=rkhs_radius,
+            rkhs_radius=rkhs_radius_l,
             rkhs_lambda=rkhs_lambda,
             verbose=verbose,
         )
