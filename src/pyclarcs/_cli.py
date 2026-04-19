@@ -1,9 +1,9 @@
 """
 Command-line interface for clarcs (Click-based).
 
-    clarcs reorient     INPUT [OUTPUT] --axes   X Y Z
+    clarcs reorient     INPUT [OUTPUT] --axes X Y Z
     clarcs symplane     INPUT [OUTPUT] [--save-plane] [options]
-    clarcs recenter     INPUT [OUTPUT] --plane  PLANE.pl
+    clarcs recenter     INPUT [OUTPUT] --plane PLANE.pl
     clarcs centerofmass INPUT [OUTPUT] --target TARGET
     clarcs normalize    INPUT [OUTPUT] --target TARGET
     clarcs nlregister   INPUT REF     [OUTPUT] [--deformation FIELD] [options]
@@ -464,98 +464,6 @@ def nlregister(input_path, ref_path, output_path, deformation,
         use_tgd=not no_tgd,
         use_rkhs=not no_rkhs,
         rkhs_lambda=rkhs_lambda,
-        verbose=verbose,
-    )
-
-    warped = apply_deformation(mov_pts, def_field)
-
-    if verbose:
-        click.echo(f"Saving warped surface: {output_path}")
-    save_surface(output_path, warped, mov_poly)
-
-    if deformation is not None:
-        if verbose:
-            click.echo(f"Saving deformation field: {deformation}")
-        save_deformation_vtk(deformation, mov_pts, mov_poly, def_field)
-
-    if verbose:
-        click.echo("Done.")
-
-
-# ---------------------------------------------------------------------------
-# demons
-# ---------------------------------------------------------------------------
-
-@cli.command()
-@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
-@click.argument("ref_path",    metavar="REF",    type=click.Path(exists=True))
-@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
-@click.option("--deformation", default=None, metavar="FIELD",
-              help="Save deformation field to this VTK file.")
-@click.option("--sigma-demons", "sigma_demons", default=None, type=float,
-              help="Demons force regularisation constant [mm].  Auto-estimated if omitted.")
-@click.option("--sigma-smooth", "sigma_smooth", default=None, type=float,
-              help="Gaussian smoothing bandwidth [mm].  Default: sigma-demons × 1.5.")
-@click.option("--dist-cutoff",  "dist_cutoff",  default=None, type=float,
-              help="Max NN search radius [mm].  Auto-estimated if omitted.")
-@click.option("--n-iter",       "n_iter",        default=80,   type=int, show_default=True,
-              help="Number of demons iterations.")
-@click.option("--n-levels",     "n_levels",      default=None, type=int,
-              help="Resolution levels (1=single-res, auto if omitted).")
-@click.option("--coarsest-n",   "coarsest_n",    default=2000, type=int, show_default=True,
-              help="Target vertex count at coarsest level.")
-@click.option("--no-diffeo",    "no_diffeo",     is_flag=True,
-              help="Additive demons (skip exp-map, faster but not diffeomorphic).")
-@click.option("--n-exp-steps",  "n_exp_steps",   default=6, type=int, show_default=True,
-              help="Scaling-and-squaring steps for exp-map (2^n compositions).")
-@_verbose_option
-def demons(input_path, ref_path, output_path, deformation,
-           sigma_demons, sigma_smooth, dist_cutoff, n_iter, n_levels, coarsest_n,
-           no_diffeo, n_exp_steps, quiet):
-    """Non-rigid surface registration via diffeomorphic demons."""
-    import os
-    from pyclarcs.io import (
-        load_surface_with_normals, save_surface, save_deformation_vtk,
-    )
-    from pyclarcs.demons import surface_demons_multires
-    from pyclarcs.nonrigid import apply_deformation
-
-    verbose = not quiet
-
-    if output_path is None:
-        stem, ext = os.path.splitext(input_path)
-        output_path = f"{stem}-demons{ext}"
-
-    if verbose:
-        click.echo(f"Loading moving surface: {input_path}")
-    mov_pts, mov_poly, mov_normals = load_surface_with_normals(input_path)
-    if verbose:
-        click.echo(f"  {len(mov_pts)} points, {len(mov_poly)} faces")
-
-    if verbose:
-        click.echo(f"Loading reference surface: {ref_path}")
-    _, _, ref_normals = load_surface_with_normals(ref_path)
-    from pyclarcs.io import load_surface
-    ref_pts, _ = load_surface(ref_path)
-    if verbose:
-        click.echo(f"  {len(ref_pts)} points")
-
-    if verbose:
-        mode = "additive" if no_diffeo else "diffeomorphic"
-        click.echo(f"Surface demons  {mode}  iter={n_iter}  (auto σ, r per level)")
-
-    def_field = surface_demons_multires(
-        mov_pts, mov_normals,
-        ref_pts, ref_normals,
-        mov_poly,
-        n_levels=n_levels,
-        target_n_coarsest=coarsest_n,
-        n_iter=n_iter,
-        sigma_demons=sigma_demons,
-        sigma_smooth=sigma_smooth,
-        dist_cutoff=dist_cutoff,
-        diffeomorphic=not no_diffeo,
-        n_exp_steps=n_exp_steps,
         verbose=verbose,
     )
 

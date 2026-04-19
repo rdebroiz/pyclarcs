@@ -1,13 +1,6 @@
 """
 Non-rigid EM-ICP surface registration.
 
-THEORETICAL BACKGROUND
-=======================
-This module implements a non-rigid registration algorithm from the CLARCS
-framework.  It is a variant of the EM-ICP method where the transform is a
-smooth, per-vertex deformation field regularised by a first-order graph
-Laplacian prior on the mesh topology.
-
 ALGORITHM
 =========
 
@@ -17,82 +10,67 @@ Notation
   n_i  : unit normal at x_i
   y_j  : vertex j of the reference surface (j = 0 … M-1)
   m_j  : unit normal at y_j
-  d_i  : deformation vector attached to x_i  (unknown, initialised to 0)
-  N_i  : set of mesh-edge neighbours of x_i
+  d_i  : deformation vector at x_i (unknown, initialised to 0)
 
 Outer loop (max_iter iterations)
 ---------------------------------
 
-E-step — doubly-stochastic fuzzy correspondences
-  For each vertex i:
-      T_i = x_i + d_i                       (current transformed position)
+E-step — Gaussian kernel + symmetric correspondences + TGD prior
 
-      For each y_j within radius r of T_i whose normal is compatible
-      (n_i · m_j ≥ 0):
-          w_ij = exp( −‖T_i − y_j‖ / σ )
+  For each vertex i, transformed position T_i = x_i + d_i.
+  For each y_j within radius r of T_i with compatible normal
+  (n_i · m_j ≥ normal_min_dot):
 
-      Row sum:  sR_i = Σ_j w_ij
-      Col sum:  sC_j = Σ_i w_ij
+      w_ij = exp( −‖T_i − y_j‖² / (2σ²) ) · π_ij
 
-      Doubly-stochastic weight:
-          ṽ_ij = w_ij / sC_j  +  w_ij / sR_i
+  where π_ij = exp( −|TGD_i − TGD_j|² / (2σ_tgd²) ) is the TGD
+  shape prior (anti cross-sulcus, disabled with use_tgd=False).
 
-      Total weight:  W_i  = Σ_j ṽ_ij
-      Target point:  ȳ_i  = (Σ_j ṽ_ij y_j) / W_i
+  Symmetric correspondences (Reg2 — Combès & Prima 2019):
+      ṽ_ij = w_ij / sR_i  +  w_ij / sC_j
+  where sR_i and sC_j are row and column sums.  Prevents many-to-one
+  mappings on non-convex surfaces (e.g. brain sulci).
 
-  Implementation: a single chunked KDTree pass builds the COO arrays
-  (rows, cols, weights).  Row/col sums and barycentres are then computed
-  with numpy bincount — no N×M sparse matrix is ever constructed.
+  Outlier term (CPD-style, σ-invariant):
+      W_i = Σ_j ṽ_ij / (Σ_j ṽ_ij + c),   c = outlier_weight · M/N
 
-E-step — Gaussian kernel + row-normalised weights + outlier term
+  Fuzzy target:  ȳ_i = Σ_j ṽ_ij · y_j / Σ_j ṽ_ij
 
-  For each vertex i:
-      T_i = x_i + d_i
+  Implementation: a single chunked KDTree pass builds COO arrays;
+  row/col sums and barycentres are computed with numpy bincount —
+  no dense N×M matrix is ever allocated.
 
-      For each y_j within radius r of T_i, normal compatible
-      (n_i · m_j ≥ normal_min_dot):
-          w_ij = exp( −‖T_i − y_j‖² / (2σ²) )
+M-step — RKHS mode (default, use_rkhs=True)
 
-      Row sum:  sR_i = Σ_j w_ij
+  Deformation expressed as d = Kα, where K is a sparse matrix with
+  the Wu C4 compactly-supported kernel (Combès & Prima 2019):
+      K_ij = (1 − r/b)⁴ (4r/b + 1),  r = ‖x_i − x_j‖,  support b
 
-      Outlier-adjusted weight (CPD-style):
-          W_i = sR_i / (sR_i + c_outlier)
+  b is set to mesh_spacing × 2 per level (≈10 neighbours/vertex).
+  CG solves:   (diag(W)·K + λI) α = diag(W)·(ȳ − x)
+  then  d = Kα.  Two passes of Laplacian smoothing (α=0.3) on d
+  suppress topology-independent folding artefacts from RKHS.
 
-      Barycentre:  ȳ_i = (Σ_j w_ij · y_j) / sR_i
+M-step — Laplacian mode (use_rkhs=False)
 
-  The outlier constant is:
-      c_outlier = w/(1−w) · (2πσ²)^(3/2) · M/N
-  where w = outlier_weight ∈ [0, 1).
-
-  Using raw row sums (not doubly-stochastic) means W_i scales with
-  the number and quality of correspondences.  This ensures the data
-  term dominates when correspondences are dense (early/coarse) and
-  the regularisation takes over when they thin out (fine/late).
-
-M-step — preconditioned conjugate gradient
-  Solves the sparse linear system  M · d[:,k] = b[:,k]  independently
-  for each coordinate k ∈ {0, 1, 2}:
-
-      M   =  diag(W_i + β·|N_i|)  −  β · A          (symmetric PSD)
-      b_i =  W_i · (ȳ_i − x_i)_k
-
-  Preconditioning with the diagonal of M (Jacobi preconditioner) gives
-  O(√κ) convergence vs. O(κ) for unaccelerated Jacobi.  The previous
-  outer-iteration solution warm-starts the solve.
+  CG solves:   (diag(W + β|N_i|) − β A) d = diag(W)·(ȳ − x)
+  where A is the mesh adjacency matrix.
 
 Annealing
-  σ ← max(σ / 2,  σ_min)   every `period_sigma` outer iterations.
+  σ ← max(σ/2, σ_min) every period_sigma outer iterations.
+  RKHS coefficients c are reset to 0 at each halving (avoids
+  CG divergence when the rhs scale changes abruptly).
 
 DEFAULT PARAMETERS
-  sigma        = 3.0    initial bandwidth (std dev of Gaussian kernel)
-  beta         = 0.5    regularisation weight
-  dist_cutoff  = 15.0   search radius (typically 3–4 σ)
-  max_iter     = 80
-  icm_iter     = 50     max CG iterations per outer iteration
-  period_sigma = 20     sigma halved every 20 outer iterations
-  sigma_min    = 0.1
-  outlier_weight = 0.1  fraction of points expected to be outliers
-  e_chunk      = 2000   vertices per KDTree query batch
+  sigma        auto  (75th pct of NN-to-ref distances)
+  beta         0.5   regularisation weight
+  dist_cutoff  auto  (99th pct × 1.5, ≥ 3σ)
+  max_iter     80
+  icm_iter     50    max CG iterations per outer iteration
+  period_sigma auto  (halvings spread evenly over max_iter)
+  sigma_min    auto  (mesh_spacing / 2)
+  outlier_weight 0.1
+  e_chunk      2000  vertices per KDTree batch
 """
 
 from __future__ import annotations

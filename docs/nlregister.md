@@ -93,7 +93,7 @@ matrix with the Wu C4 compactly-supported kernel:
 $$K_{ij} = \left(1 - \frac{r_{ij}}{b}\right)^4\!\left(\frac{4r_{ij}}{b} + 1\right)
 \cdot \mathbf{1}_{r_{ij} < b}, \quad r_{ij} = \|x_i - x_j\|$$
 
-$K$ is computed once on the original moving-mesh positions ($b = 8\sigma_\mathrm{min}$).
+$K$ is computed once on the original moving-mesh positions ($b = 2 \times \mathrm{mesh\_spacing}$, giving ≈10 neighbours/vertex at any resolution).
 The M-step solves a symmetric sparse system by CG:
 
 $$\bigl(\mathrm{diag}(W) \cdot K + \lambda I\bigr)\,\alpha = \mathrm{diag}(W)\,(\bar{y} - x)$$
@@ -119,15 +119,18 @@ the finest mesh and interpolated to coarser levels.
 
 ---
 
-## Benchmark (endocranium_mni_pial 10k, synthetic deformation)
+## Benchmark (endocranium_mni_pial 10k, realistic synthetic deformation)
 
-| Configuration | RMS after | Improvement | Time |
+Surface: MNI pial endocranium decimated to 10 000 vertices.
+Deformation: 8 Gaussian bumps × 5 mm amplitude (realistic inter-subject variability).
+RMS before registration: **2.28 mm** (after symplane → recenter → normalize preprocessing).
+Folding rate: % of faces with inverted normal (0 % = no topology inversion).
+
+| Configuration | RMS after | Improvement | Folding |
 |---|---|---|---|
-| BCPD (Nyström C++) | 3.82 mm | 37.9 % | 1.7 s |
-| clarcs baseline | 3.89 mm | 35.7 % | 80 s |
-| + Symmetric (Reg2) | 2.37 mm | 62.8 % | 74 s |
-| + TGD prior (Reg3) | 2.36 mm | 62.9 % | 83 s |
-| + RKHS M-step | **0.99 mm** | **84.0 %** | 97 s |
+| Baseline (Laplacian, no sym/TGD) | 0.333 mm | 85.4 % | 1.0 % |
+| + Symmetric correspondences (Reg2) + TGD | 0.267 mm | 88.3 % | 1.0 % |
+| **+ RKHS M-step (default)** | **0.190 mm** | **91.6 %** | **1.0 %** |
 
 ---
 
