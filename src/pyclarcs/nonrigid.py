@@ -545,7 +545,17 @@ def nonrigid_icp(
             d_new = K_mat @ c_field          # d = K α
             max_deform = dist_cutoff * 3.0
             if np.all(np.isfinite(d_new)) and float(np.max(np.abs(d_new))) < max_deform:
-                def_field[:] = d_new
+                # Laplacian smoothing on d_new: removes high-frequency folding
+                # artefacts introduced by RKHS (which is topology-independent
+                # and can invert triangles on complex surfaces).  2 passes at
+                # α=0.3 damp one-vertex spikes without eroding large-scale fit.
+                deg = np.asarray(adjacency.sum(axis=1), dtype=float).ravel()
+                inv_deg = sp_diags(1.0 / np.maximum(deg, 1.0))
+                A_norm = inv_deg @ adjacency
+                d_smooth = d_new
+                for _ in range(2):
+                    d_smooth = 0.7 * d_smooth + 0.3 * (A_norm @ d_smooth)
+                def_field[:] = d_smooth
             else:
                 # Unstable update: reset c_field so next CG starts from 0
                 # rather than the diverged state, preventing runaway growth.
@@ -626,6 +636,39 @@ def _interpolate_field(
     w /= w.sum(axis=1, keepdims=True)
     # einsum: for each fine vertex sum  w[i,k] * field_coarse[idxs[i,k]]
     return np.einsum("nk,nkd->nd", w, field_coarse[idxs])
+
+
+def _smooth_field(
+    field: np.ndarray,
+    adjacency: csr_matrix,
+    n_iter: int = 3,
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """Apply n_iter steps of explicit Laplacian smoothing to a vector field.
+
+    Each step: field ← (1-α)·field + α · (A_norm @ field)
+    where A_norm is the row-normalised adjacency (each row sums to 1).
+
+    This removes high-frequency cross-sulcus artefacts introduced by IDW
+    interpolation in 3D without mesh-topology awareness.  A small number of
+    iterations (3) with α=0.5 is sufficient to damp one-vertex spikes while
+    preserving the large-scale deformation from the coarser level.
+
+    Parameters
+    ----------
+    field      : ndarray (N, D)
+    adjacency  : csr_matrix (N, N) — symmetric, unweighted
+    n_iter     : int
+    alpha      : float in (0, 1)
+    """
+    field = field.copy()
+    deg = np.asarray(adjacency.sum(axis=1), dtype=float).ravel()
+    deg = np.maximum(deg, 1.0)
+    inv_deg = sp_diags(1.0 / deg)
+    A_norm = inv_deg @ adjacency          # row-normalised
+    for _ in range(n_iter):
+        field = (1.0 - alpha) * field + alpha * (A_norm @ field)
+    return field
 
 
 def _build_level(
@@ -851,11 +894,17 @@ def nonrigid_icp_multires(
         N_l = len(pts_l)
         is_finest = (idx == 0)
 
-        # Warm-start from interpolated coarser field
+        # Warm-start from interpolated coarser field.
+        # IDW interpolation in 3D can map a fine vertex to a coarse vertex on
+        # the opposite wall of a narrow sulcus, introducing a cross-sulcus
+        # deformation discontinuity that immediately folds the fine mesh.
+        # A few steps of Laplacian smoothing on the fine mesh removes these
+        # one-vertex spikes while preserving the large-scale warm-start.
         if def_field_prev is None:
             init_l = None
         else:
             init_l = _interpolate_field(def_field_prev, pts_prev, pts_l)
+            init_l = _smooth_field(init_l, adj_l, n_iter=3, alpha=0.5)
 
         # All levels run max_iter outer iterations.  Coarse levels are
         # cheap (few vertices) and need to do the heavy lifting; the fine
@@ -898,9 +947,7 @@ def nonrigid_icp_multires(
         else:
             tgd_mov_l = None
 
-        # Per-level RKHS radius: 2× local mesh spacing → ~10 neighbours/vertex
-        # at any resolution.  mesh_spacing * 8 (previous default) gave ~160
-        # neighbours on coarse levels → near-dense K → CG divergence.
+        # Per-level RKHS radius: 2× local mesh spacing → ~10 neighbours/vertex.
         rkhs_radius_l = rkhs_radius
         if use_rkhs and rkhs_radius_l is None:
             rkhs_radius_l = auto["mesh_spacing"] * 2.0

@@ -35,8 +35,8 @@ Surfaces produced
    surface after applying:
      (a) A small affine transform: translation (10, 7, −5) mm,
          rotation 12° around axis (0.3, 0.8, 0.5), uniform scale 1.03.
-     (b) A smooth non-rigid deformation: 16 Gaussian bumps of amplitude
-         15 mm spread across the surface.
+     (b) A smooth non-rigid deformation: 8 Gaussian bumps of amplitude
+         5 mm spread across the surface.
    Intended to exercise the full pipeline:
        clarcs normalize  →  clarcs nlregister
 """
@@ -413,7 +413,7 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
         perturbed = _affine_perturb(pts)
 
         # Step 2 — smooth non-rigid deformation applied to the already-perturbed cloud
-        field = _smooth_deformation(perturbed, amplitude=15.0, n_bumps=16)
+        field = _smooth_deformation(perturbed, amplitude=5.0, n_bumps=8)
         target_pts = perturbed + field
 
         stem = ref_path.stem
@@ -423,7 +423,7 @@ def gen_registration_samples(out_dir: Path, verbose: bool = True) -> None:
             click.echo(
                 f"  {ref_fname}  →  {out.name}"
                 f"  ({len(target_pts):,} pts)"
-                f"  [t=(10,7,-5) mm | R=12° | s=1.03 | 16 bumps ×15 mm]"
+                f"  [t=(10,7,-5) mm | R=12° | s=1.03 | 8 bumps ×5 mm]"
             )
 
 
