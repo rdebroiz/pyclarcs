@@ -663,6 +663,11 @@ _SURFACE_EXTS = {".vtk", ".vtp", ".vtu", ".ply", ".stl", ".obj"}
               help="EM iterations per registration.")
 @click.option("--n-levels", default=None, type=int,
               help="Resolution levels. Auto-estimated from the first subject if omitted.")
+@click.option("--no-prealign", is_flag=True, default=False,
+              help=(
+                  "Disable symmetry-plane + centre-of-mass pre-alignment "
+                  "before each registration. Enabled by default."
+              ))
 @click.option("--no-symmetric", is_flag=True, default=False,
               help="Disable symmetric correspondences (Reg2). Enabled by default.")
 @click.option("--no-tgd", is_flag=True, default=False,
@@ -671,7 +676,7 @@ _SURFACE_EXTS = {".vtk", ".vtp", ".vtu", ".ply", ".stl", ".obj"}
               help="Disable RKHS Wu-kernel M-step; fall back to Laplacian.")
 @_verbose_option
 def atlas(subjects_dir, output_path, atlas_iter, save_registered,
-          max_iter, n_levels, no_symmetric, no_tgd, no_rkhs, quiet):
+          max_iter, n_levels, no_prealign, no_symmetric, no_tgd, no_rkhs, quiet):
     """Build a mean shape atlas from a directory of surfaces.
 
     Iteratively registers the current mean shape (moving) toward every
@@ -735,6 +740,7 @@ def atlas(subjects_dir, output_path, atlas_iter, save_registered,
     mean_pts, mean_polygons, registered = build_atlas(
         subjects,
         atlas_iter=atlas_iter,
+        prealign=not no_prealign,
         verbose=verbose,
         n_levels=n_levels,
         max_iter=max_iter,

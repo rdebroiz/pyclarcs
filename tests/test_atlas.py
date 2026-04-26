@@ -111,7 +111,11 @@ def test_build_atlas_output_shapes(tmp_path):
 
 
 def test_build_atlas_mean_shifts_toward_population(tmp_path):
-    """After one atlas iteration the mean x-centroid must exceed the template's."""
+    """After one atlas iteration the mean x-centroid must exceed the template's.
+
+    prealign=False is used here to test the raw spatial shift mechanism without
+    the final recentering that prealign=True applies.
+    """
     from pyclarcs.atlas import build_atlas
 
     x_offsets = [0.0, 10.0, 20.0]
@@ -125,6 +129,7 @@ def test_build_atlas_mean_shifts_toward_population(tmp_path):
     mean_pts, _, _ = build_atlas(
         subjects,
         atlas_iter=1,
+        prealign=False,
         verbose=False,
         n_levels=1,
         max_iter=5,
