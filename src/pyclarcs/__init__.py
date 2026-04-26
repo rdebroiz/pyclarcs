@@ -8,18 +8,20 @@ from pyclarcs.symmetry import SymmetryPlane
 from pyclarcs.io import (
     load_surface,
     load_surface_with_normals,
+    load_vector_field,
     save_surface,
     save_plane_vtk,
     save_deformation_vtk,
 )
 from pyclarcs.mesh import mesh_adjacency, adjacency_csr
 from pyclarcs.nonrigid import register, apply_deformation
-from pyclarcs.atlas import build_atlas
+from pyclarcs.atlas import build_atlas, project_asymmetry_to_atlas
 
 __all__ = [
     "SymmetryPlane",
     "load_surface",
     "load_surface_with_normals",
+    "load_vector_field",
     "save_surface",
     "save_plane_vtk",
     "save_deformation_vtk",
@@ -28,5 +30,6 @@ __all__ = [
     "register",
     "apply_deformation",
     "build_atlas",
+    "project_asymmetry_to_atlas",
 ]
 __version__ = "0.1.0"

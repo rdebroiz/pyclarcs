@@ -320,6 +320,43 @@ def save_deformation_vtk(
     writer.Write()
 
 
+def load_vector_field(
+    path: str,
+) -> tuple[np.ndarray, list[list[int]], np.ndarray]:
+    """Load a surface and its VECTORS point data from a VTK file.
+
+    Intended to read files produced by :func:`save_deformation_vtk`
+    (asymmetry fields, deformation fields).
+
+    Parameters
+    ----------
+    path : str
+        Path to a .vtk or .vtp file with VECTORS point data.
+
+    Returns
+    -------
+    points   : ndarray (N, 3)
+    polygons : list of face index lists
+    field    : ndarray (N, 3)  — the first VECTORS array found in POINT_DATA.
+
+    Raises
+    ------
+    ValueError
+        If the file contains no VECTORS point data.
+    """
+    reader = _reader_for(path)
+    poly = _polydata_from_reader(reader)
+    points, polygons = _polydata_to_arrays(poly)
+    vtk_vecs = poly.GetPointData().GetVectors()
+    if vtk_vecs is None:
+        raise ValueError(
+            f"No VECTORS point data found in '{path}'. "
+            "Make sure the file was created with save_deformation_vtk()."
+        )
+    field = vtk_to_numpy(vtk_vecs).astype(float)
+    return points, polygons, field
+
+
 # ---------------------------------------------------------------------------
 # Public API — symmetry-plane visualisation patch
 # ---------------------------------------------------------------------------

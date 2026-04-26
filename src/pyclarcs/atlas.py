@@ -70,6 +70,49 @@ def _check_symmetry(
 
 
 # ---------------------------------------------------------------------------
+# Asymmetry projection
+# ---------------------------------------------------------------------------
+
+def project_asymmetry_to_atlas(
+    registered: list[np.ndarray],
+    asym_fields: list[np.ndarray],
+    subject_pts: list[np.ndarray],
+) -> list[np.ndarray]:
+    """Project per-subject asymmetry fields onto the atlas surface.
+
+    For each subject i, the asymmetry field is defined at the subject's
+    surface vertices.  :func:`build_atlas` produces ``registered[i]`` — the
+    atlas vertices deformed to match subject i — whose positions lie in the
+    subject's coordinate space and therefore act as lookup points for IDW
+    interpolation into the subject's asymmetry field.
+
+    Parameters
+    ----------
+    registered : list of ndarray (N, 3)
+        Per-subject registered atlas surfaces (from :func:`build_atlas` with
+        ``save-registered``).  ``registered[i][k]`` is the position of atlas
+        vertex k in subject i's coordinate space.
+    asym_fields : list of ndarray (M_i, 3)
+        Per-subject asymmetry deformation fields at the subject's own vertices
+        (from ``clarcs asymmetry``).
+    subject_pts : list of ndarray (M_i, 3)
+        Vertex positions of each subject surface.
+
+    Returns
+    -------
+    projected : list of ndarray (N, 3)
+        Per-subject asymmetry fields projected onto the N atlas vertices.
+        Stack and average to obtain the population mean asymmetry.
+    """
+    from pyclarcs.nonrigid import _interpolate_field
+
+    return [
+        _interpolate_field(asym_i, sub_pts_i, reg_i)
+        for reg_i, asym_i, sub_pts_i in zip(registered, asym_fields, subject_pts)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 

@@ -283,3 +283,199 @@ def test_cli_atlas_empty_dir(tmp_path):
         "atlas", str(subjects_dir), str(tmp_path / "atlas.vtk"),
     ])
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# project_asymmetry_to_atlas — unit tests
+# ---------------------------------------------------------------------------
+
+def test_project_asymmetry_output_shape(tmp_path):
+    """project_asymmetry_to_atlas returns one (N,3) array per subject."""
+    from pyclarcs.atlas import project_asymmetry_to_atlas
+    from pyclarcs.io import load_surface_with_normals, save_surface
+
+    n_subjects = 3
+    n_atlas = 50  # atlas vertex count
+    rng = np.random.default_rng(0)
+
+    # Synthetic atlas vertices
+    atlas_pts = rng.standard_normal((n_atlas, 3))
+
+    # Each subject has a different vertex count
+    registered = []
+    asym_fields = []
+    subject_pts_list = []
+    for k in range(n_subjects):
+        m = 60 + k * 10  # subject vertex count varies
+        sub_pts = rng.standard_normal((m, 3))
+        reg = rng.standard_normal((n_atlas, 3))   # atlas in subject space
+        asym = rng.standard_normal((m, 3))        # asymmetry at subject vertices
+        registered.append(reg)
+        asym_fields.append(asym)
+        subject_pts_list.append(sub_pts)
+
+    projected = project_asymmetry_to_atlas(registered, asym_fields, subject_pts_list)
+
+    assert len(projected) == n_subjects
+    for p in projected:
+        assert p.shape == (n_atlas, 3)
+
+
+def test_project_asymmetry_zero_field():
+    """A zero asymmetry field projects to zero on the atlas."""
+    from pyclarcs.atlas import project_asymmetry_to_atlas
+    rng = np.random.default_rng(1)
+
+    n_atlas, m = 30, 50
+    registered = [rng.standard_normal((n_atlas, 3))]
+    asym_fields = [np.zeros((m, 3))]
+    subject_pts = [rng.standard_normal((m, 3))]
+
+    projected = project_asymmetry_to_atlas(registered, asym_fields, subject_pts)
+
+    np.testing.assert_allclose(projected[0], 0.0, atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# CLI project-asymmetry — integration tests
+# ---------------------------------------------------------------------------
+
+def _make_atlas_and_data(tmp_path, n_subjects=3):
+    """Create a minimal atlas + registered surfaces + asymmetry fields."""
+    from pyclarcs.io import save_surface, save_deformation_vtk
+    rng = np.random.default_rng(42)
+
+    atlas_pts, atlas_polys = _sphere_surface()
+    n_atlas = len(atlas_pts)
+    atlas_path = str(tmp_path / "atlas.vtk")
+    save_surface(atlas_path, atlas_pts, atlas_polys)
+
+    subjects_dir = tmp_path / "subjects"
+    subjects_dir.mkdir()
+    reg_dir = tmp_path / "registered"
+    reg_dir.mkdir()
+    asym_dir = tmp_path / "asymmetry"
+    asym_dir.mkdir()
+
+    for k in range(n_subjects):
+        sub_pts, sub_polys = _sphere_surface(offset=(k * 2.0, 0.0, 0.0))
+        sub_path = str(subjects_dir / f"subject_{k:02d}.vtk")
+        save_surface(sub_path, sub_pts, sub_polys)
+
+        # Registered: atlas slightly perturbed in subject space
+        reg_pts = atlas_pts + rng.standard_normal(atlas_pts.shape) * 0.1
+        reg_path = str(reg_dir / f"atlas-registered-subject_{k:02d}.vtk")
+        save_surface(reg_path, reg_pts, atlas_polys)
+
+        # Asymmetry: small random field at subject vertices
+        asym_field = rng.standard_normal((len(sub_pts), 3)) * 0.5
+        asym_path = str(asym_dir / f"subject_{k:02d}-asymmetry.vtk")
+        save_deformation_vtk(asym_path, sub_pts, sub_polys, asym_field,
+                             deformation_name="asymmetry")
+
+    return atlas_path, subjects_dir, reg_dir, asym_dir
+
+
+def test_cli_project_asymmetry_precomputed(tmp_path):
+    """project-asymmetry with pre-computed files exits cleanly and saves VECTORS."""
+    from pyclarcs._cli import cli
+    from pyclarcs.io import load_vector_field
+
+    atlas_path, subjects_dir, reg_dir, asym_dir = _make_atlas_and_data(tmp_path)
+    out_path = str(tmp_path / "mean_asym.vtk")
+
+    result = CliRunner().invoke(cli, [
+        "project-asymmetry", atlas_path, str(subjects_dir), out_path,
+        "--registered-dir", str(reg_dir),
+        "--asymmetry-dir",  str(asym_dir),
+        "-q",
+    ])
+    assert result.exit_code == 0, result.output
+
+    pts, polys, field = load_vector_field(out_path)
+    atlas_pts, _, _ = __import__("pyclarcs").load_surface_with_normals(atlas_path)
+    assert field.shape == (len(atlas_pts), 3)
+
+
+def test_cli_project_asymmetry_save_stats(tmp_path):
+    """--save-stats produces std/min/max scalar files."""
+    from pyclarcs._cli import cli
+    from pyclarcs.io import load_surface
+
+    atlas_path, subjects_dir, reg_dir, asym_dir = _make_atlas_and_data(tmp_path)
+    out_path = str(tmp_path / "mean_asym.vtk")
+
+    result = CliRunner().invoke(cli, [
+        "project-asymmetry", atlas_path, str(subjects_dir), out_path,
+        "--registered-dir", str(reg_dir),
+        "--asymmetry-dir",  str(asym_dir),
+        "--save-stats", "-q",
+    ])
+    assert result.exit_code == 0, result.output
+
+    for stat in ("std", "min", "max"):
+        stat_path = tmp_path / f"mean_asym-{stat}.vtk"
+        assert stat_path.exists(), f"{stat} file not created"
+        pts, _ = load_surface(str(stat_path))
+        assert len(pts) > 0
+
+
+def test_cli_project_asymmetry_save_individual(tmp_path):
+    """--save-individual produces one file per subject."""
+    from pyclarcs._cli import cli
+
+    n_subjects = 3
+    atlas_path, subjects_dir, reg_dir, asym_dir = _make_atlas_and_data(
+        tmp_path, n_subjects=n_subjects
+    )
+    out_path = str(tmp_path / "mean_asym.vtk")
+
+    result = CliRunner().invoke(cli, [
+        "project-asymmetry", atlas_path, str(subjects_dir), out_path,
+        "--registered-dir", str(reg_dir),
+        "--asymmetry-dir",  str(asym_dir),
+        "--save-individual", "-q",
+    ])
+    assert result.exit_code == 0, result.output
+
+    ind_files = list(tmp_path.glob("mean_asym-subject_*.vtk"))
+    assert len(ind_files) == n_subjects
+
+
+def test_cli_project_asymmetry_mismatched_dirs(tmp_path):
+    """Mismatched file counts between dirs must produce a UsageError."""
+    from pyclarcs._cli import cli
+    from pyclarcs.io import save_surface, save_deformation_vtk
+    import numpy as np
+
+    atlas_pts, atlas_polys = _sphere_surface()
+    atlas_path = str(tmp_path / "atlas.vtk")
+    save_surface(atlas_path, atlas_pts, atlas_polys)
+
+    subjects_dir = tmp_path / "subjects"
+    subjects_dir.mkdir()
+    for k in range(3):
+        pts, polys = _sphere_surface()
+        save_surface(str(subjects_dir / f"s{k}.vtk"), pts, polys)
+
+    reg_dir = tmp_path / "reg"
+    reg_dir.mkdir()
+    # Only 2 registered files for 3 subjects → mismatch
+    for k in range(2):
+        pts, polys = _sphere_surface()
+        save_surface(str(reg_dir / f"r{k}.vtk"), pts, polys)
+
+    asym_dir = tmp_path / "asym"
+    asym_dir.mkdir()
+    for k in range(3):
+        pts, polys = _sphere_surface()
+        field = np.zeros((len(pts), 3))
+        save_deformation_vtk(str(asym_dir / f"a{k}.vtk"), pts, polys, field)
+
+    result = CliRunner().invoke(cli, [
+        "project-asymmetry", atlas_path, str(subjects_dir),
+        str(tmp_path / "out.vtk"),
+        "--registered-dir", str(reg_dir),
+        "--asymmetry-dir",  str(asym_dir),
+    ])
+    assert result.exit_code != 0
