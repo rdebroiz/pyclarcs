@@ -407,6 +407,162 @@ def mirror(input_path, output_path, plane, save_plane, quiet):
 
 
 # ---------------------------------------------------------------------------
+# asymmetry
+# ---------------------------------------------------------------------------
+
+@cli.command("asymmetry")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--plane", default=None, type=click.Path(exists=True), metavar="PLANE.pl",
+              help="Symmetry plane (.pl). Estimated automatically if omitted.")
+@click.option("--save-warped", is_flag=True,
+              help="Also save the registered mirror as <OUTPUT_STEM>-warped<EXT>.")
+@click.option("--max-iter",  default=80,   show_default=True, type=int,
+              help="EM iterations.")
+@click.option("--n-levels",  default=None, type=int,
+              help="Resolution levels. Auto-estimated if omitted.")
+@click.option("--no-symmetric", is_flag=True, default=False,
+              help="Disable symmetric correspondences (Reg2).")
+@click.option("--no-tgd",       is_flag=True, default=False,
+              help="Disable TGD geodesic shape prior (Reg3).")
+@click.option("--no-rkhs",      is_flag=True, default=False,
+              help="Disable RKHS Wu-kernel M-step; fall back to Laplacian.")
+@_verbose_option
+def asymmetry(input_path, output_path, plane, save_warped,
+              max_iter, n_levels, no_symmetric, no_tgd, no_rkhs, quiet):
+    """Compute the pointwise asymmetry field of a bilateral surface.
+
+    \b
+    Pipeline:
+      1. Estimate the bilateral symmetry plane (or load --plane).
+      2. Reflect the surface across the plane.
+      3. Non-rigidly register the reflected copy onto the original.
+      4. Save the deformation field as VECTORS on the original geometry.
+
+    The norm of each vector is the local asymmetry magnitude.  The output
+    can be opened in ParaView and coloured by the vector norm, or warped by
+    the vectors to visualise left-right differences.
+    """
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-asymmetry")
+
+    # Deformation fields require VTK format to store VECTORS point data.
+    _def_ext = Path(output_path).suffix.lower()
+    if _def_ext not in {".vtk", ".vtp"}:
+        output_path = str(Path(output_path).with_suffix(".vtk"))
+        if verbose:
+            click.echo(
+                f"Note: asymmetry field requires VTK format — "
+                f"saving as '{output_path}'."
+            )
+
+    import numpy as np
+    from pyclarcs.io import load_surface_with_normals, save_surface, save_deformation_vtk
+    from pyclarcs.symmetry import SymmetryPlane
+    from pyclarcs.alignment import reflect_surface
+    from pyclarcs.nonrigid import register, apply_deformation
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons, normals = load_surface_with_normals(input_path)
+    if verbose:
+        click.echo(f"  {len(points)} points, {len(polygons)} faces")
+
+    # ---- Symmetry plane ------------------------------------------------
+    if plane is not None:
+        if verbose:
+            click.echo(f"Loading symmetry plane: {plane}")
+        sym_plane = SymmetryPlane.load(plane)
+        if verbose:
+            click.echo(f"  {sym_plane}")
+    else:
+        if verbose:
+            click.echo("Estimating symmetry plane…")
+        from pyclarcs.principal_axes import best_principal_axis_plane
+        from pyclarcs.coarse import coarse_symmetry
+        from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
+
+        sym_plane = best_principal_axis_plane(points)
+        sym_plane = coarse_symmetry(points, sym_plane, verbose=verbose)
+        sym_plane = em_icp_sym(points, sym_plane, verbose=verbose)
+        sym_plane = em_icp_sym_corres(points, sym_plane, verbose=verbose)
+        if verbose:
+            click.echo(f"  {sym_plane}")
+
+    # ---- Mirror --------------------------------------------------------
+    if verbose:
+        click.echo("Reflecting surface…")
+    plane_normal = sym_plane.n
+    plane_point  = sym_plane.n * sym_plane.d
+    mir_pts = reflect_surface(points, plane_normal, plane_point)
+    # Reflection reverses winding → flip faces to restore outward normals.
+    mir_polygons = [f[::-1] for f in polygons]
+    from pyclarcs.io import compute_surface_normals
+    mir_normals = compute_surface_normals(mir_pts, mir_polygons)
+
+    # ---- n_levels ------------------------------------------------------
+    if n_levels is None:
+        N = len(mir_pts)
+        n_levels = 1 if N <= 5_000 else (2 if N <= 30_000 else 3)
+        if verbose:
+            click.echo(f"  auto n_levels={n_levels} ({N} vertices)")
+
+    # ---- Non-rigid registration: mirror → original ---------------------
+    if verbose:
+        click.echo(
+            f"Non-rigid registration (mirror → original)  "
+            f"{n_levels} level(s)  {max_iter} iter…"
+        )
+    def_field = register(
+        mir_pts, mir_normals,
+        points, normals,
+        mir_polygons,
+        polygons,
+        n_levels=n_levels,
+        max_iter=max_iter,
+        symmetric=not no_symmetric,
+        use_tgd=not no_tgd,
+        use_rkhs=not no_rkhs,
+        verbose=verbose,
+    )
+
+    # ---- RMS report (always printed) -----------------------------------
+    from scipy.spatial import KDTree
+    ref_tree = KDTree(points)
+    dists0, _ = ref_tree.query(mir_pts, k=1, workers=-1)
+    rms0 = float(np.sqrt(np.mean(dists0 ** 2)))
+    warped_mir = apply_deformation(mir_pts, def_field)
+    dists,  _ = ref_tree.query(warped_mir, k=1, workers=-1)
+    rms  = float(np.sqrt(np.mean(dists  ** 2)))
+    improvement = 100.0 * (rms0 - rms) / rms0 if rms0 > 0 else 0.0
+    click.echo(
+        f"RMS mirror→original: {rms0:.4f} mm → {rms:.4f} mm  ({improvement:+.1f}%)"
+    )
+
+    # ---- Save asymmetry field on original geometry ---------------------
+    # def_field[i] displaces mirrored vertex i toward original vertex i.
+    # Vertex indices match (same topology), so the field is displayed on
+    # the original surface for intuitive visualisation.
+    if verbose:
+        click.echo(f"Saving asymmetry field: {output_path}")
+    save_deformation_vtk(output_path, points, polygons, def_field,
+                         deformation_name="asymmetry")
+
+    if save_warped:
+        warped_path = str(
+            Path(output_path).with_stem(Path(output_path).stem + "-warped")
+        )
+        if verbose:
+            click.echo(f"Saving registered mirror: {warped_path}")
+        save_surface(warped_path, warped_mir, mir_polygons)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
 # nlregister
 # ---------------------------------------------------------------------------
 
