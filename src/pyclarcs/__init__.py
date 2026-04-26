@@ -13,7 +13,7 @@ from pyclarcs.io import (
     save_deformation_vtk,
 )
 from pyclarcs.mesh import mesh_adjacency, adjacency_csr
-from pyclarcs.nonrigid import nonrigid_icp, apply_deformation
+from pyclarcs.nonrigid import register, apply_deformation
 from pyclarcs.atlas import build_atlas
 
 __all__ = [
@@ -25,7 +25,7 @@ __all__ = [
     "save_deformation_vtk",
     "mesh_adjacency",
     "adjacency_csr",
-    "nonrigid_icp",
+    "register",
     "apply_deformation",
     "build_atlas",
 ]

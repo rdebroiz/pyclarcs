@@ -293,10 +293,10 @@ def estimate_registration_params(
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Core EM-ICP loop (single resolution, all parameters pre-resolved)
 # ---------------------------------------------------------------------------
 
-def nonrigid_icp(
+def _em_icp(
     mov_pts: np.ndarray,
     mov_normals: np.ndarray,
     ref_pts: np.ndarray,
@@ -323,11 +323,14 @@ def nonrigid_icp(
     rkhs_lambda: float = 0.01,
     verbose: bool = True,
 ) -> np.ndarray:
-    """Register a moving surface onto a reference using non-rigid EM-ICP.
+    """Single-resolution non-rigid EM-ICP inner loop.
+
+    All parameters must be fully resolved (no None).  This function is called
+    by :func:`register` at each level of the multi-resolution hierarchy.
 
     The algorithm iterates between:
       - computing doubly-stochastic fuzzy correspondences (E-step), and
-      - solving for the deformation field with Laplacian regularisation
+      - solving for the deformation field with Laplacian or RKHS regularisation
         via preconditioned conjugate gradient (M-step).
 
     Parameters
@@ -758,10 +761,109 @@ def _build_level(
 
 
 # ---------------------------------------------------------------------------
-# Multi-resolution registration
+# Multi-resolution helpers (hierarchy + TGD preparation)
 # ---------------------------------------------------------------------------
 
-def nonrigid_icp_multires(
+def _build_hierarchy(
+    pts: np.ndarray,
+    normals: np.ndarray,
+    polygons: list,
+    n_levels: int,
+    target_n_coarsest: int,
+    *,
+    verbose: bool = True,
+) -> list:
+    """Build a coarse-to-fine hierarchy of mesh levels.
+
+    Returns
+    -------
+    list of (pts, normals, faces, adjacency), index 0 = finest, index -1 = coarsest.
+    """
+    from pyclarcs.mesh import adjacency_csr
+    N = len(pts)
+    hierarchy = [(pts, normals, polygons, adjacency_csr(polygons, N))]
+
+    for lev in range(1, n_levels):
+        t = lev / (n_levels - 1) if n_levels > 1 else 1.0
+        target_n = max(
+            target_n_coarsest,
+            int(N * (target_n_coarsest / N) ** t),
+        )
+        if target_n >= N * 0.85:
+            if verbose:
+                print(
+                    f"  [multires] level {lev}: target {target_n} too close "
+                    f"to finest ({N}), stopping hierarchy here."
+                )
+            break
+        if verbose:
+            print(f"  [multires] building level {lev}: {N} → ~{target_n} vertices…")
+        hierarchy.append(_build_level(pts, polygons, target_n))
+
+    return hierarchy
+
+
+def _prepare_tgd(
+    mov_pts: np.ndarray,
+    mov_polygons: list,
+    ref_pts: np.ndarray,
+    ref_polygons: list | None,
+    n_seeds: int,
+    *,
+    verbose: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute normalised TGD for the moving and reference surfaces.
+
+    When *ref_polygons* is None the reference geodesic distances are
+    approximated via a KNN graph (k=8).
+
+    Returns
+    -------
+    (tgd_mov, tgd_ref) : ndarray (N,), ndarray (M,)
+    """
+    from pyclarcs.mesh import compute_tgd
+    if verbose:
+        print("  [multires] computing TGD on moving surface…")
+    tgd_mov = compute_tgd(mov_pts, mov_polygons, n_seeds=n_seeds)
+
+    if verbose:
+        print("  [multires] computing TGD on reference surface…")
+    if ref_polygons is not None:
+        tgd_ref = compute_tgd(ref_pts, ref_polygons, n_seeds=n_seeds)
+    else:
+        from scipy.spatial import KDTree as _KDTree
+        from scipy.sparse import csr_matrix as _csr
+        from scipy.sparse.csgraph import dijkstra as _dijkstra
+        M_ref = len(ref_pts)
+        _ref_tree = _KDTree(ref_pts)
+        _dists, _idxs = _ref_tree.query(ref_pts, k=9, workers=-1)
+        _rrows, _rcols, _rdata = [], [], []
+        for _i in range(M_ref):
+            for _k in range(1, 9):
+                _j = _idxs[_i, _k]
+                _rrows.append(_i); _rcols.append(_j)
+                _rdata.append(float(_dists[_i, _k]))
+        _ref_graph = _csr((_rdata, (_rrows, _rcols)), shape=(M_ref, M_ref))
+        _rng = np.random.default_rng(0)
+        _ref_seeds = _rng.choice(M_ref, size=min(n_seeds, M_ref), replace=False)
+        _ref_dist = _dijkstra(_ref_graph, indices=_ref_seeds, directed=False)
+        _fin_max = float(_ref_dist[np.isfinite(_ref_dist)].max()) \
+                   if np.isfinite(_ref_dist).any() else 1.0
+        _ref_dist = np.where(np.isinf(_ref_dist), _fin_max, _ref_dist)
+        tgd_ref = _ref_dist.sum(axis=0)
+        _mx = tgd_ref.max()
+        if _mx > 0:
+            tgd_ref /= _mx
+        tgd_ref = tgd_ref.astype(float)
+
+    return tgd_mov, tgd_ref
+
+
+# ---------------------------------------------------------------------------
+# Public registration API
+# ---------------------------------------------------------------------------
+
+def register(
     mov_pts: np.ndarray,
     mov_normals: np.ndarray,
     ref_pts: np.ndarray,
@@ -791,26 +893,21 @@ def nonrigid_icp_multires(
     rkhs_lambda: float = 0.01,
     verbose: bool = True,
 ) -> np.ndarray:
-    """Multi-resolution non-rigid EM-ICP surface registration.
+    """Non-rigid EM-ICP surface registration with multi-resolution annealing.
 
-    Builds a hierarchy of *n_levels* progressively decimated copies of the
-    moving surface (always decimated from the original, not recursively).
-    Registration runs from the coarsest level to the finest:
+    Orchestrates the full registration pipeline:
 
-      coarsest (target_n_coarsest pts)
-          → run nonrigid_icp  (max_iter iterations)
-          → interpolate deformation field to next finer mesh (IDW, k=4)
-      …
-      finest (original mesh, len(mov_pts) pts)
-          → run nonrigid_icp  (max_iter // 2 iterations, warm-started)
+    1. Build a coarse-to-fine hierarchy of the moving surface
+       (:func:`_build_hierarchy`).
+    2. Compute TGD shape priors on both surfaces (:func:`_prepare_tgd`).
+    3. Pin ``sigma_min`` to the finest-level mesh spacing so all levels share
+       the same annealing floor.
+    4. Run :func:`_em_icp` from coarsest to finest, warm-starting each level
+       from the IDW-interpolated result of the previous coarser level.
 
     At each level the KDTree is always queried against the **full-resolution
-    reference**, so the hierarchy only affects the moving surface.
-
-    Sigma, dist_cutoff and period_sigma are re-estimated at each level from
-    the current residual (transformed minus reference) unless explicit values
-    are provided.  Because the residual decreases as the hierarchy progresses,
-    the kernel automatically narrows at finer scales.
+    reference** — only the moving surface is decimated.  ``n_levels=1``
+    disables multi-resolution (single-scale registration).
 
     Parameters
     ----------
@@ -819,220 +916,122 @@ def nonrigid_icp_multires(
     ref_pts : ndarray (M, 3)
     ref_normals : ndarray (M, 3)
     mov_polygons : list of face index lists
-        Polygon connectivity of the moving surface (needed for decimation
-        and adjacency construction at each level).
+    ref_polygons : list of face index lists or None
+        Needed for TGD on the reference.  If None, a KNN graph approximation
+        is used.
     n_levels : int
-        Number of resolution levels including the finest.  With
-        ``n_levels=1`` the method is identical to ``nonrigid_icp``.
+        Number of resolution levels including the finest.
     target_n_coarsest : int
-        Target vertex count at the coarsest level.  Intermediate levels
-        are placed geometrically between this value and ``len(mov_pts)``.
+        Target vertex count at the coarsest level.
     sigma, dist_cutoff, period_sigma : float or None
-        Override the auto-estimated values at every level.  None (default)
-        triggers per-level re-estimation from the current residual.
+        Override per-level auto-estimation.
     beta : float or None
-        Regularisation weight.  None (default) → auto-estimated per level
-        from the level's mesh spacing (``4 × mesh_spacing``).  Because
-        coarser decimated meshes have larger spacing, this naturally yields
-        a higher β at coarse levels without needing ``beta_coarse_factor``.
+        Regularisation weight.  None → auto from mesh spacing.
     beta_coarse_factor : float
-        Multiplier applied to *explicit* beta values at each coarser level
-        (finest idx=0, coarsest idx=L-1).  Ignored when beta is None.
+        Geometric multiplier applied to explicit beta at each coarser level.
     sigma_min : float or None
-        Annealing floor.  None (default) → auto-estimated per level from
-        the level's mesh spacing (``max(0.1, mesh_spacing / 2)``).
+        Annealing floor.  None → auto from finest-level mesh spacing.
     max_iter : int
-        Outer iterations at every level.  Coarse levels are cheap (few
-        vertices); the finest level warm-starts from the interpolated
-        coarse solution so it needs fewer corrections, but the full
-        budget is kept so sigma annealing runs to completion.
+        Outer EM iterations per level.
     icm_iter : int
-        Maximum CG iterations per outer iteration (same at all levels).
+        Max CG iterations per EM step.
     e_chunk : int
-        KDTree batch size (same at all levels).
+        KDTree batch size.
     verbose : bool
 
     Returns
     -------
     def_field : ndarray (N, 3)
-        Per-vertex deformation field at the finest (original) resolution.
-        The warped surface is ``mov_pts + def_field``.
+        Per-vertex deformation field at finest resolution.
+        Warped surface: ``mov_pts + def_field``.
     """
-    from pyclarcs.mesh import adjacency_csr
-
     mov_pts     = np.asarray(mov_pts,     dtype=float)
     mov_normals = np.asarray(mov_normals, dtype=float)
     ref_pts     = np.asarray(ref_pts,     dtype=float)
     ref_normals = np.asarray(ref_normals, dtype=float)
-
     N = len(mov_pts)
 
-    # ------------------------------------------------------------------
-    # Build hierarchy: level 0 = finest (original), level L-1 = coarsest
-    # ------------------------------------------------------------------
-    adj_finest = adjacency_csr(mov_polygons, N)
-    # Each entry: (pts, normals, faces, adjacency)
-    hierarchy = [(mov_pts, mov_normals, mov_polygons, adj_finest)]
-
-    for lev in range(1, n_levels):
-        # Geometrically-spaced target size in log space
-        t = lev / (n_levels - 1) if n_levels > 1 else 1.0
-        target_n = max(
-            target_n_coarsest,
-            int(N * (target_n_coarsest / N) ** t),
-        )
-        if target_n >= len(hierarchy[0][0]) * 0.85:
-            if verbose:
-                print(
-                    f"  [multires] level {lev}: target {target_n} too close "
-                    f"to finest ({N}), stopping hierarchy here."
-                )
-            break
-        if verbose:
-            print(f"  [multires] building level {lev}: {N} → ~{target_n} vertices…")
-        hierarchy.append(_build_level(mov_pts, mov_polygons, target_n))
-
+    hierarchy = _build_hierarchy(
+        mov_pts, mov_normals, mov_polygons, n_levels, target_n_coarsest,
+        verbose=verbose,
+    )
     n_actual = len(hierarchy)
 
-    # Pre-compute sigma_min from the FINEST-level mesh so that all levels
-    # share the same annealing floor.  Without this, coarser decimated meshes
-    # produce larger mesh_spacing → larger sigma_min → the sigma_min * 4 floor
-    # in estimate_registration_params forces the starting sigma much too high
-    # at coarse levels (e.g. sigma_min_coarse * 4 >> initial gap).
-    # By pinning sigma_min to the finest-level spacing throughout, coarse
-    # levels keep a fine sigma_min (→ more halvings, gradual annealing) and
-    # the warm-started fine level still benefits from sigma_min * 4 forcing
-    # at least two halvings even when the warm-start residual is small.
+    # Pin sigma_min to the finest-level mesh spacing so all levels share the
+    # same annealing floor.  Coarser decimated meshes have larger spacing which
+    # would inflate sigma_min and push sigma too high via the sigma_min*4 floor.
     if sigma_min is None:
-        _finest_sample = min(2000, N)
-        _rng = np.random.default_rng(0)
-        _idx = _rng.choice(N, size=_finest_sample, replace=False)
+        _sample = min(2000, N)
+        _idx = np.random.default_rng(0).choice(N, size=_sample, replace=False)
         _nn, _ = KDTree(mov_pts).query(mov_pts[_idx], k=2, workers=-1)
         sigma_min = max(0.1, float(np.median(_nn[:, 1])) / 2.0)
 
-    # ------------------------------------------------------------------
-    # Compute TGD once on finest mesh and reference, interpolate per level
-    # ------------------------------------------------------------------
     tgd_mov_fine: np.ndarray | None = None
     tgd_ref_arr:  np.ndarray | None = None
     if use_tgd:
-        from pyclarcs.mesh import compute_tgd
-        if verbose:
-            print("  [multires] computing TGD on moving surface…")
-        tgd_mov_fine = compute_tgd(mov_pts, mov_polygons, n_seeds=tgd_n_seeds)
-        if verbose:
-            print("  [multires] computing TGD on reference surface…")
-        if ref_polygons is not None:
-            tgd_ref_arr = compute_tgd(ref_pts, ref_polygons, n_seeds=tgd_n_seeds)
-        else:
-            # No polygon connectivity supplied — approximate via KNN graph
-            from scipy.spatial import KDTree as _KDTree
-            from scipy.sparse import csr_matrix as _csr
-            from scipy.sparse.csgraph import dijkstra as _dijkstra
-            _ref_tree = _KDTree(ref_pts)
-            _dists, _idxs = _ref_tree.query(ref_pts, k=9, workers=-1)
-            M_ref = len(ref_pts)
-            _rrows, _rcols, _rdata = [], [], []
-            for _i in range(M_ref):
-                for _k in range(1, 9):
-                    _j = _idxs[_i, _k]
-                    _rrows.append(_i); _rcols.append(_j)
-                    _rdata.append(float(_dists[_i, _k]))
-            _ref_graph = _csr((_rdata, (_rrows, _rcols)), shape=(M_ref, M_ref))
-            _rng2 = np.random.default_rng(0)
-            _ref_seeds = _rng2.choice(M_ref, size=min(tgd_n_seeds, M_ref), replace=False)
-            _ref_dist = _dijkstra(_ref_graph, indices=_ref_seeds, directed=False)
-            _fin_max = float(_ref_dist[np.isfinite(_ref_dist)].max()) \
-                       if np.isfinite(_ref_dist).any() else 1.0
-            _ref_dist = np.where(np.isinf(_ref_dist), _fin_max, _ref_dist)
-            tgd_ref_arr = _ref_dist.sum(axis=0)
-            _mx = tgd_ref_arr.max()
-            if _mx > 0:
-                tgd_ref_arr /= _mx
-            tgd_ref_arr = tgd_ref_arr.astype(float)
+        tgd_mov_fine, tgd_ref_arr = _prepare_tgd(
+            mov_pts, mov_polygons, ref_pts, ref_polygons,
+            tgd_n_seeds, verbose=verbose,
+        )
 
-    # ------------------------------------------------------------------
-    # Register coarsest → finest
-    # ------------------------------------------------------------------
-    def_field_prev: np.ndarray | None = None   # result from coarser level
-    pts_prev: np.ndarray | None       = None
+    def_field_prev: np.ndarray | None = None
+    pts_prev:       np.ndarray | None = None
 
     for idx in range(n_actual - 1, -1, -1):
         pts_l, normals_l, _, adj_l = hierarchy[idx]
         N_l = len(pts_l)
         is_finest = (idx == 0)
 
-        # Warm-start from interpolated coarser field.
-        # IDW interpolation in 3D can map a fine vertex to a coarse vertex on
-        # the opposite wall of a narrow sulcus, introducing a cross-sulcus
-        # deformation discontinuity that immediately folds the fine mesh.
-        # A few steps of Laplacian smoothing on the fine mesh removes these
-        # one-vertex spikes while preserving the large-scale warm-start.
+        # Warm-start: interpolate coarser field then smooth away cross-sulcus
+        # artefacts introduced by IDW in 3D (no mesh-topology awareness).
         if def_field_prev is None:
             init_l = None
         else:
             init_l = _interpolate_field(def_field_prev, pts_prev, pts_l)
             init_l = _smooth_field(init_l, adj_l, n_iter=3, alpha=0.5)
 
-        # All levels run max_iter outer iterations.  Coarse levels are
-        # cheap (few vertices) and need to do the heavy lifting; the fine
-        # level warm-starts from the interpolated coarse solution so it
-        # only needs to refine, but still benefits from the full budget.
-        max_iter_l = max_iter
-
-        # β: if an explicit value was provided, scale geometrically toward
-        # coarser levels; if None, auto-estimate per level (below).
         beta_l = (beta * (beta_coarse_factor ** idx)) if beta is not None else None
 
-        # Auto-estimate params from current residual (and mesh spacing).
         transformed_l = pts_l if init_l is None else pts_l + init_l
-        sigma_l    = sigma
-        cutoff_l   = dist_cutoff
-        period_l   = period_sigma
+        sigma_l     = sigma
+        cutoff_l    = dist_cutoff
+        period_l    = period_sigma
         sigma_min_l = sigma_min
 
-        if sigma_l is None or cutoff_l is None or period_l is None \
-                or beta_l is None or sigma_min_l is None:
+        if any(v is None for v in (sigma_l, cutoff_l, period_l, beta_l, sigma_min_l)):
             auto = estimate_registration_params(
-                transformed_l, ref_pts,
-                max_iter=max_iter_l,
-                sigma_min=sigma_min,   # None → auto from mesh spacing
+                transformed_l, ref_pts, max_iter=max_iter, sigma_min=sigma_min,
             )
-            if sigma_l    is None: sigma_l    = auto["sigma"]
-            if cutoff_l   is None: cutoff_l   = auto["dist_cutoff"]
-            if period_l   is None: period_l   = auto["period_sigma"]
-            if beta_l     is None: beta_l     = auto["beta"]
+            if sigma_l     is None: sigma_l     = auto["sigma"]
+            if cutoff_l    is None: cutoff_l    = auto["dist_cutoff"]
+            if period_l    is None: period_l    = auto["period_sigma"]
+            if beta_l      is None: beta_l      = auto["beta"]
             if sigma_min_l is None: sigma_min_l = auto["sigma_min"]
 
-        # TGD for this level: interpolate fine-level TGD to coarser mesh
         if use_tgd and tgd_mov_fine is not None:
-            if idx == 0:
-                tgd_mov_l = tgd_mov_fine
-            else:
-                tgd_mov_l = _interpolate_field(
-                    tgd_mov_fine[:, np.newaxis], mov_pts, pts_l
-                ).ravel()
+            tgd_mov_l = tgd_mov_fine if idx == 0 else _interpolate_field(
+                tgd_mov_fine[:, np.newaxis], mov_pts, pts_l,
+            ).ravel()
         else:
             tgd_mov_l = None
 
-        # Per-level RKHS radius: 2× local mesh spacing → ~10 neighbours/vertex.
         rkhs_radius_l = rkhs_radius
         if use_rkhs and rkhs_radius_l is None:
             rkhs_radius_l = auto["mesh_spacing"] * 2.0
 
         if verbose:
-            label = "finest" if is_finest else f"level {idx}"
-            tgd_tag = f"  TGD={'on' if tgd_mov_l is not None else 'off'}"
+            label   = "finest" if is_finest else f"level {idx}"
+            tgd_tag  = f"  TGD={'on' if tgd_mov_l is not None else 'off'}"
             rkhs_tag = f"  rkhs_r={rkhs_radius_l:.2f}" if use_rkhs else ""
             print(
                 f"\n  [multires] {label}  {N_l} vertices"
-                f"  {max_iter_l} outer iterations"
+                f"  {max_iter} outer iterations"
                 f"  β={beta_l:.2f}  σ_min={sigma_min_l:.3f}"
                 f"  σ={sigma_l:.3f}  r={cutoff_l:.2f}"
                 f"  period_σ={period_l}{tgd_tag}{rkhs_tag}"
             )
 
-        def_field_l = nonrigid_icp(
+        def_field_prev = _em_icp(
             pts_l, normals_l,
             ref_pts, ref_normals,
             adj_l,
@@ -1040,7 +1039,7 @@ def nonrigid_icp_multires(
             sigma=sigma_l,
             beta=beta_l,
             dist_cutoff=cutoff_l,
-            max_iter=max_iter_l,
+            max_iter=max_iter,
             icm_iter=icm_iter,
             period_sigma=period_l,
             sigma_min=sigma_min_l,
@@ -1056,11 +1055,9 @@ def nonrigid_icp_multires(
             rkhs_lambda=rkhs_lambda,
             verbose=verbose,
         )
+        pts_prev = pts_l
 
-        def_field_prev = def_field_l
-        pts_prev       = pts_l
-
-    return def_field_prev  # finest-level result
+    return def_field_prev
 
 
 def apply_deformation(

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from pyclarcs.nonrigid import nonrigid_icp_multires, apply_deformation
+from pyclarcs.nonrigid import register, apply_deformation
 from pyclarcs.io import compute_surface_normals
 
 
@@ -81,7 +81,7 @@ def build_atlas(
             if atlas_it == 0 and k == 0:
                 warped[k] = mean_pts.copy()
                 continue
-            df = nonrigid_icp_multires(
+            df = register(
                 mean_pts, mean_normals,
                 sub_pts, sub_normals,
                 mean_polygons,

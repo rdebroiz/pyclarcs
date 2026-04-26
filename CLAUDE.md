@@ -48,7 +48,7 @@ All source code lives in `src/pyclarcs/`.
 | `fine.py` | Fine EM-ICP annealing + doubly-stochastic refinement |
 | `alignment.py` | Rigid transforms (recenter, rescale, center-of-mass alignment) |
 | `mesh.py` | Adjacency lists, decimation, TGD geodesic prior, Wu RKHS kernel |
-| `nonrigid.py` | Multi-resolution non-rigid EM-ICP (`nonrigid_icp_multires`) |
+| `nonrigid.py` | Non-rigid EM-ICP: `register` (public orchestrator), `_em_icp` (single-level EM loop), `_build_hierarchy`, `_prepare_tgd` |
 | `_numba_kernels.py` | Numba JIT-compiled hot loops; `_warmup()` is called at import time |
 
 ### Surface representation
@@ -69,7 +69,7 @@ principal_axes → coarse ICP (trimmed) → EM-ICP annealing → doubly-stochast
 
 ### Non-rigid registration pipeline
 
-`nonrigid_icp_multires()` runs EM-ICP at multiple resolution levels (auto-computed: ≤5k vertices → 1 level, ≤30k → 2, >30k → 3). Three algorithmic improvements are layered in:
+`register()` runs EM-ICP at multiple resolution levels (auto-computed: ≤5k vertices → 1 level, ≤30k → 2, >30k → 3). Three algorithmic improvements are layered in:
 - **Reg2** — symmetric correspondences (prevents many-to-one mappings)
 - **Reg3** — TGD geodesic prior (shape constraint)
 - **RKHS** — Wu-kernel M-step (topology-independent regularization)

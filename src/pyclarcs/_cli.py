@@ -478,7 +478,7 @@ def nlregister(input_path, ref_path, output_path, deformation,
     from pyclarcs.io import (
         load_surface_with_normals, save_surface, save_deformation_vtk,
     )
-    from pyclarcs.nonrigid import nonrigid_icp_multires, apply_deformation
+    from pyclarcs.nonrigid import register, apply_deformation
 
     if verbose:
         click.echo(f"Loading moving surface: {input_path}")
@@ -521,7 +521,7 @@ def nlregister(input_path, ref_path, output_path, deformation,
             + auto_note
         )
 
-    def_field = nonrigid_icp_multires(
+    def_field = register(
         mov_pts, mov_normals,
         ref_pts, ref_normals,
         mov_poly,
