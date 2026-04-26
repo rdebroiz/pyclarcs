@@ -80,7 +80,93 @@ import math
 import numpy as np
 from scipy.spatial import KDTree
 from scipy.sparse import csr_matrix, diags as sp_diags
-from scipy.sparse.linalg import cg as sp_cg
+from scipy.sparse.linalg import cg as _sp_cg
+
+def _build_openblas_thread_fns():
+    """Return list of (get_fn, set_fn) pairs for all scipy/numpy openblas libs.
+
+    scipy bundles openblas under renamed symbols (scipy_openblas_*) which
+    threadpoolctl cannot discover.  We locate the .so files directly and bind
+    the set/get num_threads functions via ctypes so we can single-thread BLAS
+    calls without keeping threadpoolctl as a dependency.
+    """
+    import ctypes
+    from pathlib import Path as _Path
+    import scipy as _scipy
+    import numpy as _numpy
+
+    _SET32 = ["scipy_openblas_set_num_threads",  "scipy_openblas_set_num_threads_",
+              "openblas_set_num_threads"]
+    _GET32 = ["scipy_openblas_get_num_threads",  "scipy_openblas_get_num_threads_",
+              "openblas_get_num_threads"]
+    _SET64 = ["scipy_openblas_set_num_threads64_", "scipy_openblas_set_num_threads_64_"]
+    _GET64 = ["scipy_openblas_get_num_threads64_", "scipy_openblas_get_num_threads_64_"]
+
+    pairs = []
+    seen  = set()
+    for pkg in (_scipy, _numpy):
+        pkg_dir = _Path(pkg.__file__).parent
+        for libs_dir in pkg_dir.parent.glob("*.libs"):
+            for so in sorted(libs_dir.glob("lib*openblas*.so*")):
+                if so in seen:
+                    continue
+                seen.add(so)
+                try:
+                    lib = ctypes.CDLL(str(so))
+                except OSError:
+                    continue
+                # Try ILP64 first (64-bit integer build), then LP64
+                for set_names, get_names, ctype in (
+                    (_SET64, _GET64, ctypes.c_int64),
+                    (_SET32, _GET32, ctypes.c_int32),
+                ):
+                    set_fn = next((getattr(lib, n, None) for n in set_names
+                                   if getattr(lib, n, None)), None)
+                    get_fn = next((getattr(lib, n, None) for n in get_names
+                                   if getattr(lib, n, None)), None)
+                    if set_fn:
+                        set_fn.argtypes = [ctype]
+                        set_fn.restype  = None
+                        if get_fn:
+                            get_fn.argtypes = []
+                            get_fn.restype  = ctype
+                        pairs.append((get_fn, set_fn))
+                        break
+    return pairs
+
+
+_OPENBLAS_FNS = _build_openblas_thread_fns()
+
+from contextlib import contextmanager as _contextmanager
+
+
+@_contextmanager
+def _blas_single_thread():
+    """Context manager: limit all detected openblas libs to 1 thread, then restore.
+
+    scipy_openblas64 (USE64BITINT) has a race condition where BLAS worker threads
+    continue writing into already-freed memory after a sparse BLAS call returns.
+    The next numpy allocation reuses that memory and gets corrupted (~536M phantom
+    indices).  Pinning to 1 thread eliminates background workers entirely.
+
+    This must wrap the entire EM inner loop — not just sp_cg — because
+    sparse @ dense operations (RKHS kernel multiply, Laplacian smooth) also
+    launch BLAS threads that outlive the call.
+    """
+    saved = [(get_fn, set_fn, int(get_fn()) if get_fn else None)
+             for get_fn, set_fn in _OPENBLAS_FNS]
+    for _, set_fn, _ in saved:
+        set_fn(1)
+    try:
+        yield
+    finally:
+        for get_fn, set_fn, prev in saved:
+            if prev is not None:
+                set_fn(prev)
+
+
+def sp_cg(A, b, **kwargs):
+    return _sp_cg(A, b, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +468,9 @@ def nonrigid_icp(
 
     ref_tree = KDTree(ref_pts)
 
+    _blas_ctx = _blas_single_thread()
+    _blas_ctx.__enter__()
+
     for it in range(max_iter):
         transformed = mov_pts + def_field  # (N, 3)
 
@@ -578,6 +667,7 @@ def nonrigid_icp(
                 f"  inliers={n_inliers}/{N}"
             )
 
+    _blas_ctx.__exit__(None, None, None)
     return def_field
 
 

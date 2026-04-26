@@ -328,6 +328,85 @@ def normalize(input_path, output_path, target, quiet):
 
 
 # ---------------------------------------------------------------------------
+# mirror
+# ---------------------------------------------------------------------------
+
+@cli.command("mirror")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--plane", default=None, type=click.Path(exists=True), metavar="PLANE.pl",
+              help="Symmetry plane file (.pl). Estimated automatically if omitted.")
+@click.option("--save-plane", is_flag=True,
+              help="Save the (computed or loaded) plane to <OUTPUT_STEM>.pl.")
+@_verbose_option
+def mirror(input_path, output_path, plane, save_plane, quiet):
+    """Reflect a surface across its bilateral symmetry plane.
+
+    If --plane is omitted the symmetry plane is estimated automatically
+    from the surface itself (equivalent to running  clarcs symplane  first).
+    """
+    verbose = not quiet
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-mirror")
+
+    from pyclarcs.io import load_surface, save_surface
+    from pyclarcs.symmetry import SymmetryPlane
+    from pyclarcs.alignment import reflect_surface
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    points, polygons = load_surface(input_path)
+    if verbose:
+        click.echo(f"  {len(points)} points, {len(polygons)} faces")
+
+    if plane is not None:
+        if verbose:
+            click.echo(f"Loading symmetry plane: {plane}")
+        sym_plane = SymmetryPlane.load(plane)
+        if verbose:
+            click.echo(f"  {sym_plane}")
+    else:
+        if verbose:
+            click.echo("No plane provided — estimating symmetry plane…")
+        from pyclarcs.principal_axes import best_principal_axis_plane
+        from pyclarcs.coarse import coarse_symmetry
+        from pyclarcs.fine import em_icp_sym, em_icp_sym_corres
+
+        sym_plane = best_principal_axis_plane(points)
+        sym_plane = coarse_symmetry(points, sym_plane, verbose=verbose)
+        sym_plane = em_icp_sym(points, sym_plane, verbose=verbose)
+        sym_plane = em_icp_sym_corres(points, sym_plane, verbose=verbose)
+        if verbose:
+            click.echo(f"  Estimated plane: {sym_plane}")
+
+    plane_normal = sym_plane.n
+    plane_point  = sym_plane.n * sym_plane.d
+
+    if verbose:
+        click.echo("Reflecting surface…")
+    mirrored = reflect_surface(points, plane_normal, plane_point)
+
+    # Reflection reverses triangle winding (right-hand rule flips sign).
+    # Reversing each face restores outward-pointing normals.
+    import numpy as np
+    flipped_polygons = [f[::-1] for f in polygons]
+
+    if verbose:
+        click.echo(f"Saving: {output_path}")
+    save_surface(output_path, mirrored, flipped_polygons)
+
+    if save_plane:
+        pl_path = str(Path(output_path).with_suffix(".pl"))
+        if verbose:
+            click.echo(f"Saving plane parameters: {pl_path}")
+        sym_plane.save(pl_path)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
 # nlregister
 # ---------------------------------------------------------------------------
 
@@ -469,14 +548,32 @@ def nlregister(input_path, ref_path, output_path, deformation,
 
     warped = apply_deformation(mov_pts, def_field)
 
+    import numpy as np
+    from scipy.spatial import KDTree
+    ref_tree = KDTree(ref_pts)
+    dists0, _ = ref_tree.query(mov_pts, k=1, workers=-1)
+    rms0 = float(np.sqrt(np.mean(dists0 ** 2)))
+    dists, _ = ref_tree.query(warped, k=1, workers=-1)
+    rms = float(np.sqrt(np.mean(dists ** 2)))
+    improvement = 100.0 * (rms0 - rms) / rms0 if rms0 > 0 else 0.0
+    click.echo(f"RMS: {rms0:.4f} mm → {rms:.4f} mm  ({improvement:+.1f}%)")
+
     if verbose:
         click.echo(f"Saving warped surface: {output_path}")
     save_surface(output_path, warped, mov_poly)
 
     if deformation is not None:
+        deformation_path = deformation
+        _def_ext = Path(deformation_path).suffix.lower()
+        if _def_ext not in {".vtk", ".vtp"}:
+            deformation_path = str(Path(deformation_path).with_suffix(".vtk"))
+            click.echo(
+                f"Warning: '{_def_ext}' does not support vector point data — "
+                f"saving deformation field as '{deformation_path}' instead."
+            )
         if verbose:
-            click.echo(f"Saving deformation field: {deformation}")
-        save_deformation_vtk(deformation, mov_pts, mov_poly, def_field)
+            click.echo(f"Saving deformation field: {deformation_path}")
+        save_deformation_vtk(deformation_path, mov_pts, mov_poly, def_field)
 
     if verbose:
         click.echo("Done.")

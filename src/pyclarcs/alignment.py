@@ -204,3 +204,32 @@ def reorient_axes(
     result[:, y_to] = points[:, 1]
     result[:, z_to] = points[:, 2]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Bilateral reflection
+# ---------------------------------------------------------------------------
+
+def reflect_surface(
+    points: np.ndarray,
+    plane_normal: np.ndarray,
+    plane_point: np.ndarray,
+) -> np.ndarray:
+    """Reflect *points* across a plane defined by a unit normal and a point.
+
+    Parameters
+    ----------
+    points       : (N, 3)
+    plane_normal : (3,)  normal of the symmetry plane (need not be unit)
+    plane_point  : (3,)  any point on the plane
+
+    Returns
+    -------
+    (N, 3) reflected coordinates
+    """
+    n = np.asarray(plane_normal, dtype=float)
+    n = n / np.linalg.norm(n)
+    p = np.asarray(plane_point, dtype=float)
+    pts = np.asarray(points, dtype=float)
+    signed_dist = (pts - p) @ n
+    return pts - 2.0 * signed_dist[:, None] * n
