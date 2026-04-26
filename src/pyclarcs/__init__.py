@@ -32,4 +32,4 @@ __all__ = [
     "build_atlas",
     "project_asymmetry_to_atlas",
 ]
-__version__ = "0.1.0"
+__version__ = "0.4.0"
