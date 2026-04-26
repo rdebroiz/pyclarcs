@@ -407,32 +407,41 @@ def mirror(input_path, output_path, plane, save_plane, quiet):
 
 
 # ---------------------------------------------------------------------------
-# project-asymmetry
+# project-asym
 # ---------------------------------------------------------------------------
 
-@cli.command("project-asymmetry")
-@click.argument("atlas_path",    metavar="ATLAS",       type=click.Path(exists=True))
-@click.argument("subjects_dir",  metavar="SUBJECTS_DIR", type=click.Path(exists=True, file_okay=False))
-@click.argument("output_path",   metavar="OUTPUT")
-@click.option("--registered-dir", default=None, type=click.Path(exists=True, file_okay=False),
-              metavar="DIR",
-              help="Directory of pre-computed registered atlas surfaces "
+@cli.command("project-asym")
+@click.argument("subjects_dir", metavar="SUBJECTS_DIR",
+                type=click.Path(exists=True, file_okay=False))
+@click.argument("output_path",  metavar="OUTPUT")
+@click.option("--atlas", "atlas_path", default=None,
+              type=click.Path(exists=True), metavar="ATLAS",
+              help="Pre-existing atlas surface.  If omitted, the atlas is built "
+                   "from SUBJECTS_DIR using  clarcs atlas  parameters.")
+@click.option("--save-atlas", default=None, metavar="PATH",
+              help="Save the built atlas to this path (ignored when --atlas is given).")
+@click.option("--atlas-iter", default=3, show_default=True, type=int,
+              help="Atlas construction cycles (ignored when --atlas is given).")
+@click.option("--no-prealign", is_flag=True, default=False,
+              help="Disable sym-plane + CoM pre-alignment during atlas build.")
+@click.option("--registered-dir", default=None,
+              type=click.Path(exists=True, file_okay=False), metavar="DIR",
+              help="Pre-computed registered atlas surfaces "
                    "(from  clarcs atlas --save-registered).  "
-                   "Files are matched to subjects by alphabetical sort order.  "
-                   "If omitted, the atlas is registered to each subject on the fly.")
-@click.option("--asymmetry-dir", default=None, type=click.Path(exists=True, file_okay=False),
-              metavar="DIR",
-              help="Directory of pre-computed asymmetry fields "
+                   "Only used when --atlas is provided.  "
+                   "Files matched to subjects by alphabetical sort order.")
+@click.option("--asymmetry-dir", default=None,
+              type=click.Path(exists=True, file_okay=False), metavar="DIR",
+              help="Pre-computed asymmetry fields "
                    "(from  clarcs asymmetry).  "
-                   "Files are matched to subjects by alphabetical sort order.  "
-                   "If omitted, the asymmetry is computed on the fly.")
+                   "Files matched to subjects by alphabetical sort order.  "
+                   "If omitted, asymmetry is computed on the fly.")
 @click.option("--save-individual", is_flag=True,
               help="Save per-subject projected fields as "
                    "<OUTPUT_STEM>-<subject_name><EXT>.")
 @click.option("--save-stats", is_flag=True,
-              help="Save per-vertex norm statistics as "
-                   "<OUTPUT_STEM>-std/min/max<EXT>.")
-@click.option("--max-iter",  default=80,   show_default=True, type=int,
+              help="Save per-vertex norm statistics (std / min / max) alongside OUTPUT.")
+@click.option("--max-iter",  default=80,  show_default=True, type=int,
               help="EM iterations per registration.")
 @click.option("--n-levels",  default=None, type=int,
               help="Resolution levels. Auto-estimated if omitted.")
@@ -440,42 +449,47 @@ def mirror(input_path, output_path, plane, save_plane, quiet):
 @click.option("--no-tgd",       is_flag=True, default=False)
 @click.option("--no-rkhs",      is_flag=True, default=False)
 @_verbose_option
-def project_asymmetry(atlas_path, subjects_dir, output_path,
-                      registered_dir, asymmetry_dir,
-                      save_individual, save_stats,
-                      max_iter, n_levels,
-                      no_symmetric, no_tgd, no_rkhs, quiet):
-    """Project per-subject asymmetry fields onto the atlas surface.
+def project_asym(subjects_dir, output_path,
+                 atlas_path, save_atlas, atlas_iter, no_prealign,
+                 registered_dir, asymmetry_dir,
+                 save_individual, save_stats,
+                 max_iter, n_levels,
+                 no_symmetric, no_tgd, no_rkhs, quiet):
+    """Build an atlas and project each subject's asymmetry onto it.
 
     \b
-    Pipeline (per subject):
-      1. Load or compute the asymmetry field  (clarcs asymmetry).
-      2. Load or compute the registered atlas surface in the subject's space
-         (clarcs atlas --save-registered).
-      3. Project the asymmetry field onto atlas vertices via IDW interpolation.
+    One-pass pipeline (no pre-computed files):
+      clarcs project-asym subjects/ mean-asym.vtk
 
     \b
-    Then aggregate across subjects:
-      - Mean asymmetry field  → OUTPUT  (VECTORS on atlas geometry)
-      - Norm statistics       → --save-stats
-      - Individual fields     → --save-individual
+    With pre-existing atlas (skip atlas build):
+      clarcs project-asym subjects/ mean-asym.vtk --atlas atlas.vtk
 
     \b
-    File matching (--registered-dir / --asymmetry-dir):
-      Files in each directory are sorted alphabetically and matched
-      one-to-one with the sorted subjects in SUBJECTS_DIR.
+    Fully incremental (all pre-computed):
+      clarcs project-asym subjects/ mean-asym.vtk \\
+        --atlas atlas.vtk \\
+        --registered-dir reg/ \\
+        --asymmetry-dir  asym/
+
+    \b
+    Output:
+      OUTPUT               Mean asymmetry field  (VECTORS on atlas)
+      --save-atlas PATH    Also save the built atlas surface
+      --save-stats         <OUTPUT_STEM>-std/min/max<EXT>
+      --save-individual    <OUTPUT_STEM>-<subject><EXT> per subject
     """
     verbose = not quiet
 
     import numpy as np
     from pyclarcs.io import (
-        load_surface, load_surface_with_normals, load_vector_field,
+        load_surface_with_normals, load_vector_field,
         save_surface, save_deformation_vtk, compute_surface_normals,
     )
     from pyclarcs.nonrigid import register, apply_deformation
-    from pyclarcs.atlas import project_asymmetry_to_atlas
+    from pyclarcs.atlas import build_atlas, project_asymmetry_to_atlas
 
-    # ---- Validate and resolve OUTPUT -----------------------------------
+    # ---- Validate OUTPUT -----------------------------------------------
     out_p = Path(output_path)
     if out_p.is_dir():
         raise click.UsageError(
@@ -491,48 +505,24 @@ def project_asymmetry(atlas_path, subjects_dir, output_path,
         )
     out_p.parent.mkdir(parents=True, exist_ok=True)
 
-    # ---- Load atlas ----------------------------------------------------
-    if verbose:
-        click.echo(f"Loading atlas: {atlas_path}")
-    atlas_pts, atlas_poly, atlas_normals = load_surface_with_normals(atlas_path)
-    if verbose:
-        click.echo(f"  {len(atlas_pts)} vertices")
-
     # ---- Enumerate subjects --------------------------------------------
     subject_files = sorted(
         p for p in Path(subjects_dir).iterdir()
         if p.suffix.lower() in _SURFACE_EXTS
     )
-    if not subject_files:
-        raise click.UsageError(f"No surface files found in SUBJECTS_DIR: {subjects_dir}")
-
-    # ---- Enumerate pre-computed files (if provided) --------------------
-    def _list_dir(d):
-        return sorted(
-            p for p in Path(d).iterdir()
-            if p.suffix.lower() in (_SURFACE_EXTS | {".vtk", ".vtp"})
-        ) if d else []
-
-    reg_files  = _list_dir(registered_dir)
-    asym_files = _list_dir(asymmetry_dir)
-
-    if registered_dir and len(reg_files) != len(subject_files):
+    if len(subject_files) < 2:
         raise click.UsageError(
-            f"--registered-dir has {len(reg_files)} file(s) "
-            f"but SUBJECTS_DIR has {len(subject_files)}."
-        )
-    if asymmetry_dir and len(asym_files) != len(subject_files):
-        raise click.UsageError(
-            f"--asymmetry-dir has {len(asym_files)} file(s) "
-            f"but SUBJECTS_DIR has {len(subject_files)}."
+            f"SUBJECTS_DIR must contain at least 2 surfaces, "
+            f"found {len(subject_files)}."
         )
 
-    # ---- Resolve n_levels from atlas size ------------------------------
+    # ---- Resolve n_levels from first subject ---------------------------
     if n_levels is None:
-        N = len(atlas_pts)
-        n_levels = 1 if N <= 5_000 else (2 if N <= 30_000 else 3)
+        _first_pts, _, _ = load_surface_with_normals(str(subject_files[0]))
+        N0 = len(_first_pts)
+        n_levels = 1 if N0 <= 5_000 else (2 if N0 <= 30_000 else 3)
         if verbose:
-            click.echo(f"  auto n_levels={n_levels}")
+            click.echo(f"auto n_levels={n_levels} ({N0} vertices in first subject)")
 
     reg_kwargs = dict(
         n_levels=n_levels, max_iter=max_iter,
@@ -541,28 +531,121 @@ def project_asymmetry(atlas_path, subjects_dir, output_path,
         verbose=verbose,
     )
 
-    # ---- Per-subject loop ----------------------------------------------
-    n = len(subject_files)
-    all_registered  = []
+    # ---- Load all subjects ---------------------------------------------
+    if verbose:
+        click.echo(f"Loading {len(subject_files)} subjects from: {subjects_dir}")
+    subjects = []
+    for p in subject_files:
+        pts, polys, normals = load_surface_with_normals(str(p))
+        subjects.append((pts, polys, normals))
+        if verbose:
+            click.echo(f"  {p.name}: {len(pts)} pts")
+
+    # ====================================================================
+    # ATLAS — build or load
+    # ====================================================================
+    if atlas_path is None:
+        # -- Build from scratch ------------------------------------------
+        if registered_dir:
+            click.echo(
+                "Warning: --registered-dir is ignored when building the atlas "
+                "from scratch (registered surfaces come from build_atlas)."
+            )
+        if verbose:
+            click.echo(
+                f"\nBuilding atlas: {len(subjects)} subjects, "
+                f"{atlas_iter} iteration(s)…"
+            )
+        atlas_pts, atlas_poly, all_registered = build_atlas(
+            subjects,
+            atlas_iter=atlas_iter,
+            prealign=not no_prealign,
+            verbose=verbose,
+            **reg_kwargs,
+        )
+        atlas_normals = compute_surface_normals(atlas_pts, atlas_poly)
+
+        if save_atlas:
+            _ap = Path(save_atlas)
+            if not _ap.suffix:
+                _ap = _ap.with_suffix(".vtk")
+            _ap.parent.mkdir(parents=True, exist_ok=True)
+            save_surface(str(_ap), atlas_pts, atlas_poly)
+            if verbose:
+                click.echo(f"Atlas saved: {_ap}")
+
+    else:
+        # -- Load pre-existing atlas -------------------------------------
+        if verbose:
+            click.echo(f"Loading atlas: {atlas_path}")
+        atlas_pts, atlas_poly, atlas_normals = load_surface_with_normals(atlas_path)
+        if verbose:
+            click.echo(f"  {len(atlas_pts)} vertices")
+
+        # Registered surfaces: pre-computed or compute on the fly
+        def _list_dir(d):
+            return sorted(
+                p for p in Path(d).iterdir()
+                if p.suffix.lower() in (_SURFACE_EXTS | {".vtk", ".vtp"})
+            ) if d else []
+
+        reg_files = _list_dir(registered_dir)
+        if registered_dir and len(reg_files) != len(subject_files):
+            raise click.UsageError(
+                f"--registered-dir has {len(reg_files)} file(s) "
+                f"but SUBJECTS_DIR has {len(subject_files)}."
+            )
+
+        all_registered = []
+        for k, (sub_pts, sub_poly, sub_normals) in enumerate(subjects):
+            if registered_dir:
+                if verbose:
+                    click.echo(f"  Loading registered [{k+1}]: {reg_files[k].name}")
+                reg_pts, _, _ = load_surface_with_normals(str(reg_files[k]))
+            else:
+                if verbose:
+                    click.echo(
+                        f"  Registering atlas → subject {k+1}/{len(subjects)}…"
+                    )
+                df = register(
+                    atlas_pts, atlas_normals,
+                    sub_pts, sub_normals,
+                    atlas_poly, sub_poly,
+                    **reg_kwargs,
+                )
+                reg_pts = apply_deformation(atlas_pts, df)
+            all_registered.append(reg_pts)
+
+    # ====================================================================
+    # ASYMMETRY — load or compute per subject
+    # ====================================================================
+    def _list_asym(d):
+        return sorted(
+            p for p in Path(d).iterdir()
+            if p.suffix.lower() in (_SURFACE_EXTS | {".vtk", ".vtp"})
+        ) if d else []
+
+    asym_files = _list_asym(asymmetry_dir)
+    if asymmetry_dir and len(asym_files) != len(subject_files):
+        raise click.UsageError(
+            f"--asymmetry-dir has {len(asym_files)} file(s) "
+            f"but SUBJECTS_DIR has {len(subject_files)}."
+        )
+
     all_asym_fields = []
     all_subject_pts = []
+    n = len(subjects)
 
-    for k, sub_file in enumerate(subject_files):
-        if verbose:
-            click.echo(f"\n[{k+1}/{n}] {sub_file.name}")
-
-        sub_pts, sub_poly, sub_normals = load_surface_with_normals(str(sub_file))
+    for k, (sub_pts, sub_poly, sub_normals) in enumerate(subjects):
         all_subject_pts.append(sub_pts)
 
-        # -- Asymmetry field ---------------------------------------------
         if asymmetry_dir:
             if verbose:
-                click.echo(f"  Loading asymmetry: {asym_files[k].name}")
+                click.echo(f"  Loading asymmetry [{k+1}]: {asym_files[k].name}")
             _, _, asym_field = load_vector_field(str(asym_files[k]))
         else:
             if verbose:
-                click.echo("  Computing asymmetry…")
-            from pyclarcs.symmetry import SymmetryPlane
+                click.echo(f"  Computing asymmetry [{k+1}/{n}]…")
             from pyclarcs.alignment import reflect_surface
             from pyclarcs.principal_axes import best_principal_axis_plane
             from pyclarcs.coarse import coarse_symmetry
@@ -585,59 +668,43 @@ def project_asymmetry(atlas_path, subjects_dir, output_path,
             )
         all_asym_fields.append(asym_field)
 
-        # -- Registered atlas surface ------------------------------------
-        if registered_dir:
-            if verbose:
-                click.echo(f"  Loading registered: {reg_files[k].name}")
-            reg_pts, _, _ = load_surface_with_normals(str(reg_files[k]))
-        else:
-            if verbose:
-                click.echo("  Registering atlas → subject…")
-            df_atlas = register(
-                atlas_pts, atlas_normals,
-                sub_pts, sub_normals,
-                atlas_poly, sub_poly,
-                **reg_kwargs,
-            )
-            reg_pts = apply_deformation(atlas_pts, df_atlas)
-        all_registered.append(reg_pts)
-
-    # ---- Project onto atlas -------------------------------------------
+    # ====================================================================
+    # PROJECTION + AGGREGATION
+    # ====================================================================
     if verbose:
         click.echo("\nProjecting asymmetry fields onto atlas…")
     projected = project_asymmetry_to_atlas(
         all_registered, all_asym_fields, all_subject_pts
     )
 
-    # ---- Aggregate ----------------------------------------------------
-    arr = np.stack(projected)          # (n, N, 3)
-    mean_field = arr.mean(axis=0)      # (N, 3)
-    norms = np.linalg.norm(arr, axis=2)  # (n, N)
+    arr = np.stack(projected)               # (n, N, 3)
+    mean_field = arr.mean(axis=0)           # (N, 3)
+    norms = np.linalg.norm(arr, axis=2)     # (n, N)
 
     click.echo(
-        f"Mean asymmetry norm: {float(np.linalg.norm(mean_field, axis=1).mean()):.4f} mm"
+        f"Mean asymmetry norm: "
+        f"{float(np.linalg.norm(mean_field, axis=1).mean()):.4f} mm"
     )
 
-    # ---- Save mean field (VECTORS on atlas) ---------------------------
     if verbose:
         click.echo(f"Saving mean asymmetry field: {output_path}")
     save_deformation_vtk(output_path, atlas_pts, atlas_poly, mean_field,
                          deformation_name="asymmetry_mean")
 
-    # ---- Save statistics ----------------------------------------------
     if save_stats:
         for stat_name, stat_vals in (
             ("std", norms.std(axis=0)),
             ("min", norms.min(axis=0)),
             ("max", norms.max(axis=0)),
         ):
-            stat_path = str(out_p.parent / f"{out_p.stem}-{stat_name}{out_p.suffix}")
+            stat_path = str(
+                out_p.parent / f"{out_p.stem}-{stat_name}{out_p.suffix}"
+            )
             save_surface(stat_path, atlas_pts, atlas_poly,
                          scalars=stat_vals, scalars_name=f"asymmetry_{stat_name}")
             if verbose:
                 click.echo(f"  Saved {stat_name}: {stat_path}")
 
-    # ---- Save individual projected fields -----------------------------
     if save_individual:
         for proj_i, sub_file in zip(projected, subject_files):
             ind_path = str(

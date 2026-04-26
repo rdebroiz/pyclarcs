@@ -376,7 +376,7 @@ def _make_atlas_and_data(tmp_path, n_subjects=3):
     return atlas_path, subjects_dir, reg_dir, asym_dir
 
 
-def test_cli_project_asymmetry_precomputed(tmp_path):
+def test_cli_project_asym_precomputed(tmp_path):
     """project-asymmetry with pre-computed files exits cleanly and saves VECTORS."""
     from pyclarcs._cli import cli
     from pyclarcs.io import load_vector_field
@@ -385,7 +385,8 @@ def test_cli_project_asymmetry_precomputed(tmp_path):
     out_path = str(tmp_path / "mean_asym.vtk")
 
     result = CliRunner().invoke(cli, [
-        "project-asymmetry", atlas_path, str(subjects_dir), out_path,
+        "project-asym", str(subjects_dir), out_path,
+        "--atlas", atlas_path,
         "--registered-dir", str(reg_dir),
         "--asymmetry-dir",  str(asym_dir),
         "-q",
@@ -397,7 +398,7 @@ def test_cli_project_asymmetry_precomputed(tmp_path):
     assert field.shape == (len(atlas_pts), 3)
 
 
-def test_cli_project_asymmetry_save_stats(tmp_path):
+def test_cli_project_asym_save_stats(tmp_path):
     """--save-stats produces std/min/max scalar files."""
     from pyclarcs._cli import cli
     from pyclarcs.io import load_surface
@@ -406,7 +407,8 @@ def test_cli_project_asymmetry_save_stats(tmp_path):
     out_path = str(tmp_path / "mean_asym.vtk")
 
     result = CliRunner().invoke(cli, [
-        "project-asymmetry", atlas_path, str(subjects_dir), out_path,
+        "project-asym", str(subjects_dir), out_path,
+        "--atlas", atlas_path,
         "--registered-dir", str(reg_dir),
         "--asymmetry-dir",  str(asym_dir),
         "--save-stats", "-q",
@@ -420,7 +422,7 @@ def test_cli_project_asymmetry_save_stats(tmp_path):
         assert len(pts) > 0
 
 
-def test_cli_project_asymmetry_save_individual(tmp_path):
+def test_cli_project_asym_save_individual(tmp_path):
     """--save-individual produces one file per subject."""
     from pyclarcs._cli import cli
 
@@ -431,7 +433,8 @@ def test_cli_project_asymmetry_save_individual(tmp_path):
     out_path = str(tmp_path / "mean_asym.vtk")
 
     result = CliRunner().invoke(cli, [
-        "project-asymmetry", atlas_path, str(subjects_dir), out_path,
+        "project-asym", str(subjects_dir), out_path,
+        "--atlas", atlas_path,
         "--registered-dir", str(reg_dir),
         "--asymmetry-dir",  str(asym_dir),
         "--save-individual", "-q",
@@ -442,7 +445,7 @@ def test_cli_project_asymmetry_save_individual(tmp_path):
     assert len(ind_files) == n_subjects
 
 
-def test_cli_project_asymmetry_mismatched_dirs(tmp_path):
+def test_cli_project_asym_mismatched_dirs(tmp_path):
     """Mismatched file counts between dirs must produce a UsageError."""
     from pyclarcs._cli import cli
     from pyclarcs.io import save_surface, save_deformation_vtk
@@ -473,8 +476,9 @@ def test_cli_project_asymmetry_mismatched_dirs(tmp_path):
         save_deformation_vtk(str(asym_dir / f"a{k}.vtk"), pts, polys, field)
 
     result = CliRunner().invoke(cli, [
-        "project-asymmetry", atlas_path, str(subjects_dir),
+        "project-asym", str(subjects_dir),
         str(tmp_path / "out.vtk"),
+        "--atlas",          atlas_path,
         "--registered-dir", str(reg_dir),
         "--asymmetry-dir",  str(asym_dir),
     ])
