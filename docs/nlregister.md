@@ -174,19 +174,20 @@ clarcs nlregister target-rcs.vtk  reference.vtk  target-registered.vtk \
 ## Python API
 
 ```python
-from pyclarcs.io import load_surface, load_surface_with_normals, save_surface
-from pyclarcs.nonrigid import nonrigid_icp_multires, apply_deformation
+from pyclarcs.io import load_surface_with_normals, save_surface
+from pyclarcs.nonrigid import register, apply_deformation
 
 mov_pts, mov_poly, mov_normals = load_surface_with_normals("target.vtk")
-ref_pts, ref_poly              = load_surface("reference.vtk")
-ref_pts_n, _, ref_normals      = load_surface_with_normals("reference.vtk")
+ref_pts, ref_poly, ref_normals = load_surface_with_normals("reference.vtk")
 
-def_field = nonrigid_icp_multires(
+# All algorithmic improvements are on by default:
+#   symmetric=True   — symmetric correspondences (Reg2)
+#   use_tgd=True     — TGD geodesic shape prior  (Reg3)
+#   use_rkhs=True    — RKHS Wu-kernel M-step
+def_field = register(
     mov_pts, mov_normals,
-    ref_pts_n, ref_normals,
-    mov_poly, ref_poly,      # ref_poly enables mesh-based TGD for reference
-    # All algorithmic improvements are on by default:
-    # symmetric=True, use_tgd=True, use_rkhs=True
+    ref_pts, ref_normals,
+    mov_poly, ref_poly,
 )
 
 warped = apply_deformation(mov_pts, def_field)
