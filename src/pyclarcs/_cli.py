@@ -580,6 +580,68 @@ def nlregister(input_path, ref_path, output_path, deformation,
 
 
 # ---------------------------------------------------------------------------
+# resample
+# ---------------------------------------------------------------------------
+
+@cli.command("downsample")
+@click.argument("input_path",  metavar="INPUT",  type=click.Path(exists=True))
+@click.argument("output_path", metavar="OUTPUT", required=False, default=None)
+@click.option("--target-n", default=None, type=int, metavar="N",
+              help="Target vertex count.")
+@click.option("--ratio",    default=None, type=float, metavar="R",
+              help="Target fraction of the original vertex count (e.g. 0.1 = 10 %).")
+@_verbose_option
+def downsample(input_path, output_path, target_n, ratio, quiet):
+    """Decimate a surface to a lower vertex count.
+
+    Exactly one of --target-n or --ratio must be provided.
+
+    \b
+    Examples:
+      clarcs downsample brain.ply brain-5k.ply --target-n 5000
+      clarcs downsample brain.ply brain-10pct.ply --ratio 0.1
+    """
+    verbose = not quiet
+
+    if (target_n is None) == (ratio is None):
+        raise click.UsageError("Provide exactly one of --target-n or --ratio.")
+
+    if output_path is None:
+        output_path = _default_output(input_path, "-downsampled")
+
+    from pyclarcs.io import load_surface, save_surface
+    from pyclarcs.mesh import decimate_surface
+
+    if verbose:
+        click.echo(f"Loading surface: {input_path}")
+    pts, polygons = load_surface(input_path)
+    n_orig = len(pts)
+    if verbose:
+        click.echo(f"  {n_orig} vertices, {len(polygons)} faces")
+
+    n_target = target_n if target_n is not None else max(3, int(n_orig * ratio))
+
+    if n_target >= n_orig:
+        click.echo(
+            f"Warning: target {n_target} ≥ current {n_orig} vertices — "
+            "nothing to decimate, copying input."
+        )
+        pts_d, faces_d = pts, polygons
+    else:
+        if verbose:
+            click.echo(f"Decimating to ~{n_target} vertices…")
+        pts_d, faces_d = decimate_surface(pts, polygons, n_target)
+
+    if verbose:
+        click.echo(f"  {n_orig} → {len(pts_d)} vertices")
+        click.echo(f"Saving: {output_path}")
+    save_surface(output_path, pts_d, faces_d)
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
 # atlas
 # ---------------------------------------------------------------------------
 
