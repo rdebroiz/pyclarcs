@@ -693,6 +693,30 @@ def atlas(subjects_dir, output_path, atlas_iter, save_registered,
     from pyclarcs.io import load_surface_with_normals, save_surface
     from pyclarcs.atlas import build_atlas
 
+    # ------------------------------------------------------------------
+    # Resolve and validate OUTPUT early so we fail fast, before the
+    # expensive atlas computation.
+    # ------------------------------------------------------------------
+    out_p = Path(output_path)
+    if out_p.is_dir():
+        raise click.UsageError(
+            f"OUTPUT must be a file path, not a directory: {output_path!r}\n"
+            f"Hint: {output_path}/atlas.vtk"
+        )
+    if not out_p.suffix:
+        out_p = out_p.with_suffix(".vtk")
+        output_path = str(out_p)
+        if verbose:
+            click.echo(f"  (no extension in OUTPUT — defaulting to .vtk: {output_path})")
+    _out_fmt = out_p.suffix.lower()
+    _write_exts = {".vtk", ".vtp", ".ply", ".stl", ".obj"}
+    if _out_fmt not in _write_exts:
+        raise click.UsageError(
+            f"Unsupported output format {out_p.suffix!r}. "
+            f"Supported: {', '.join(sorted(_write_exts))}"
+        )
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+
     subject_files = sorted(
         p for p in Path(subjects_dir).iterdir()
         if p.suffix.lower() in _SURFACE_EXTS
@@ -754,12 +778,10 @@ def atlas(subjects_dir, output_path, atlas_iter, save_registered,
     save_surface(output_path, mean_pts, mean_polygons)
 
     if save_registered:
-        out_p = Path(output_path)
-        out_stem = out_p.stem
-        out_dir = out_p.parent
-        out_ext = out_p.suffix or ".vtk"
         for warped, p in zip(registered, subject_files):
-            reg_path = str(out_dir / f"{out_stem}-registered-{p.stem}{out_ext}")
+            reg_path = str(
+                out_p.parent / f"{out_p.stem}-registered-{p.stem}{out_p.suffix}"
+            )
             save_surface(reg_path, warped, mean_polygons)
             if verbose:
                 click.echo(f"  Saved: {reg_path}")
