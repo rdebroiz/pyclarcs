@@ -580,6 +580,139 @@ def nlregister(input_path, ref_path, output_path, deformation,
 
 
 # ---------------------------------------------------------------------------
+# atlas
+# ---------------------------------------------------------------------------
+
+_SURFACE_EXTS = {".vtk", ".vtp", ".vtu", ".ply", ".stl", ".obj"}
+
+
+@cli.command("atlas")
+@click.argument("subjects_dir", metavar="SUBJECTS_DIR",
+                type=click.Path(exists=True, file_okay=False))
+@click.argument("output_path", metavar="OUTPUT")
+@click.option("--atlas-iter", default=3, show_default=True, type=int,
+              help="Number of register-all → average cycles.")
+@click.option("--save-registered", is_flag=True,
+              help=(
+                  "Also save the atlas warped toward each subject as "
+                  "<OUTPUT_STEM>-registered-<subject_name><EXT>."
+              ))
+@click.option("--max-iter", default=80, show_default=True, type=int,
+              help="EM iterations per registration.")
+@click.option("--n-levels", default=None, type=int,
+              help="Resolution levels. Auto-estimated from the first subject if omitted.")
+@click.option("--no-symmetric", is_flag=True, default=False,
+              help="Disable symmetric correspondences (Reg2). Enabled by default.")
+@click.option("--no-tgd", is_flag=True, default=False,
+              help="Disable the TGD geodesic shape prior (Reg3). Enabled by default.")
+@click.option("--no-rkhs", is_flag=True, default=False,
+              help="Disable RKHS Wu-kernel M-step; fall back to Laplacian.")
+@_verbose_option
+def atlas(subjects_dir, output_path, atlas_iter, save_registered,
+          max_iter, n_levels, no_symmetric, no_tgd, no_rkhs, quiet):
+    """Build a mean shape atlas from a directory of surfaces.
+
+    Iteratively registers the current mean shape (moving) toward every
+    subject (reference), then replaces the mean shape with the pointwise
+    average of all warped copies.  Repeats for --atlas-iter cycles.
+
+    The atlas topology matches the first subject (alphabetical order).
+    Subjects may have different vertex counts.
+    """
+    verbose = not quiet
+
+    import numpy as np
+    from scipy.spatial import KDTree
+    from pyclarcs.io import load_surface_with_normals, save_surface
+    from pyclarcs.atlas import build_atlas
+
+    subject_files = sorted(
+        p for p in Path(subjects_dir).iterdir()
+        if p.suffix.lower() in _SURFACE_EXTS
+    )
+    if len(subject_files) < 2:
+        raise click.UsageError(
+            f"SUBJECTS_DIR must contain at least 2 supported surfaces "
+            f"({', '.join(sorted(_SURFACE_EXTS))}), "
+            f"found {len(subject_files)}."
+        )
+
+    if verbose:
+        click.echo(
+            f"Loading {len(subject_files)} subjects from: {subjects_dir}"
+        )
+    subjects = []
+    for p in subject_files:
+        pts, polys, normals = load_surface_with_normals(str(p))
+        subjects.append((pts, polys, normals))
+        if verbose:
+            click.echo(f"  {p.name}: {len(pts)} points, {len(polys)} faces")
+
+    if n_levels is None:
+        N = len(subjects[0][0])
+        n_levels = 1 if N <= 5_000 else (2 if N <= 30_000 else 3)
+        if verbose:
+            click.echo(
+                f"  auto n_levels={n_levels} ({N} template vertices)"
+            )
+
+    if verbose:
+        click.echo(
+            f"Building atlas: {len(subjects)} subjects, "
+            f"{atlas_iter} atlas iteration(s), "
+            f"{max_iter} EM iter/registration"
+        )
+
+    rms0_values = []
+    template_pts = subjects[0][0]
+    for sub_pts, _, _ in subjects[1:]:
+        dists0, _ = KDTree(template_pts).query(sub_pts, k=1, workers=-1)
+        rms0_values.append(float(np.sqrt(np.mean(dists0 ** 2))))
+    rms0_mean = float(np.mean(rms0_values))
+
+    mean_pts, mean_polygons, registered = build_atlas(
+        subjects,
+        atlas_iter=atlas_iter,
+        verbose=verbose,
+        n_levels=n_levels,
+        max_iter=max_iter,
+        symmetric=not no_symmetric,
+        use_tgd=not no_tgd,
+        use_rkhs=not no_rkhs,
+    )
+
+    if verbose:
+        click.echo(f"Saving atlas: {output_path}")
+    save_surface(output_path, mean_pts, mean_polygons)
+
+    if save_registered:
+        out_p = Path(output_path)
+        out_stem = out_p.stem
+        out_dir = out_p.parent
+        out_ext = out_p.suffix or ".vtk"
+        for warped, p in zip(registered, subject_files):
+            reg_path = str(out_dir / f"{out_stem}-registered-{p.stem}{out_ext}")
+            save_surface(reg_path, warped, mean_polygons)
+            if verbose:
+                click.echo(f"  Saved: {reg_path}")
+
+    rms_values = []
+    for (sub_pts, _, _), warped in zip(subjects, registered):
+        dists, _ = KDTree(sub_pts).query(warped, k=1, workers=-1)
+        rms_values.append(float(np.sqrt(np.mean(dists ** 2))))
+    rms_mean = float(np.mean(rms_values))
+    rms_max = float(np.max(rms_values))
+    improvement = 100.0 * (rms0_mean - rms_mean) / rms0_mean if rms0_mean > 0 else 0.0
+    click.echo(
+        f"RMS (atlas→subjects): {rms0_mean:.4f} mm → {rms_mean:.4f} mm "
+        f"({improvement:+.1f}%)  max={rms_max:.4f} mm"
+    )
+
+    if verbose:
+        click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

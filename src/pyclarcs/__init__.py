@@ -14,6 +14,7 @@ from pyclarcs.io import (
 )
 from pyclarcs.mesh import mesh_adjacency, adjacency_csr
 from pyclarcs.nonrigid import nonrigid_icp, apply_deformation
+from pyclarcs.atlas import build_atlas
 
 __all__ = [
     "SymmetryPlane",
@@ -26,5 +27,6 @@ __all__ = [
     "adjacency_csr",
     "nonrigid_icp",
     "apply_deformation",
+    "build_atlas",
 ]
 __version__ = "0.1.0"

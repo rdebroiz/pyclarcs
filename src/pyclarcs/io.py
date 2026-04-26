@@ -217,6 +217,29 @@ def load_surface_with_normals(
     return points, polygons, normals
 
 
+def compute_surface_normals(
+    points: np.ndarray,
+    polygons: list[list[int]],
+) -> np.ndarray:
+    """Compute consistent per-vertex normals for an in-memory surface.
+
+    Parameters
+    ----------
+    points : ndarray (N, 3)
+    polygons : list of face index lists
+
+    Returns
+    -------
+    normals : ndarray (N, 3), float64
+    """
+    poly = _arrays_to_polydata(points, polygons)
+    poly_n = _compute_normals(poly)
+    vtk_n = poly_n.GetPointData().GetNormals()
+    if vtk_n is None:
+        raise ValueError("VTK could not compute normals for the provided surface.")
+    return vtk_to_numpy(vtk_n).astype(float)
+
+
 # ---------------------------------------------------------------------------
 # Public API — saving
 # ---------------------------------------------------------------------------
