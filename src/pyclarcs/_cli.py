@@ -528,7 +528,6 @@ def project_asym(subjects_dir, output_path,
         n_levels=n_levels, max_iter=max_iter,
         symmetric=not no_symmetric,
         use_tgd=not no_tgd, use_rkhs=not no_rkhs,
-        verbose=verbose,
     )
 
     # ---- Load all subjects ---------------------------------------------
@@ -611,6 +610,7 @@ def project_asym(subjects_dir, output_path,
                     atlas_pts, atlas_normals,
                     sub_pts, sub_normals,
                     atlas_poly, sub_poly,
+                    verbose=verbose,
                     **reg_kwargs,
                 )
                 reg_pts = apply_deformation(atlas_pts, df)
@@ -664,6 +664,7 @@ def project_asym(subjects_dir, output_path,
                 mir_pts, mir_normals,
                 sub_pts, sub_normals,
                 mir_poly, sub_poly,
+                verbose=verbose,
                 **reg_kwargs,
             )
         all_asym_fields.append(asym_field)
