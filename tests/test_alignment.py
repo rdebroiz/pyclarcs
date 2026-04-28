@@ -196,6 +196,25 @@ def test_recenter_output_shape():
     assert result.shape == pts.shape
 
 
+def test_recenter_plane_at_x0_normal_positive_x():
+    """Points on the plane must map to x = 0 when no normal flip is needed."""
+    plane = SymmetryPlane(n=[0.6, 0.8, 0.0], d=5.0)
+    pts = _bilateral(seed=20, plane_n=[0.6, 0.8, 0.0], plane_d=5.0)
+    on_plane = plane.project(pts)          # exactly on the plane: n·p = d
+    result = align_to_symmetry_plane(on_plane, plane)
+    np.testing.assert_allclose(result[:, 0], 0.0, atol=1e-10)
+
+
+def test_recenter_plane_at_x0_normal_negative_x():
+    """Regression: when plane.n points toward -x, flipping n without flipping d
+    caused the symmetry plane to land at x = -2*d instead of x = 0."""
+    plane = SymmetryPlane(n=[-0.6, 0.8, 0.0], d=5.0)
+    pts = _bilateral(seed=21, plane_n=[-0.6, 0.8, 0.0], plane_d=5.0)
+    on_plane = plane.project(pts)          # exactly on the plane: n·p = d
+    result = align_to_symmetry_plane(on_plane, plane)
+    np.testing.assert_allclose(result[:, 0], 0.0, atol=1e-10)
+
+
 # ---------------------------------------------------------------------------
 # CLI — centerofmass
 # ---------------------------------------------------------------------------
