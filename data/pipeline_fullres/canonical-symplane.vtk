@@ -1,0 +1,12 @@
+# vtk DataFile Version 5.1
+vtk output
+ASCII
+DATASET POLYDATA
+POINTS 4 float
+0 -129.433 129.852 0 -129.433 -131.767 0 132.186 -131.767 
+0 132.186 129.852 
+POLYGONS 2 4
+OFFSETS vtktypeint64
+0 4 
+CONNECTIVITY vtktypeint64
+0 1 2 3 

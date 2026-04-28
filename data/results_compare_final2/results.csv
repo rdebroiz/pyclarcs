@@ -1,0 +1,3 @@
+pair,method,before_mm,after_mm,improvement_pct,time_s
+endocranium_mni_pial_10k,clarcs,6.153,0.987,84.0,96.9
+endocranium_mni_pial_10k,bcpd,6.153,3.821,37.9,1.7

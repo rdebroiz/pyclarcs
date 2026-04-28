@@ -105,8 +105,8 @@ def align_to_symmetry_plane(
     2. Build a source frame on the plane:
        - ``dep1`` = orthogonal projection of the surface centroid onto the plane
        - ``e1``   = plane normal ``n`` (→ canonical x-axis)
-       - ``e2``   = in-plane unit direction toward the projection of ``[0, 30, 0]``
-                    (→ canonical y-axis; fallback to ``[0, 0, 30]`` if collinear)
+       - ``e2``   = projection of ``[0, 1, 0]`` onto the plane (→ canonical y-axis;
+                    fallback to ``[0, 0, 1]`` if ``n`` is parallel to Y)
        - ``e3``   = ``cross(e1, e2)`` (→ canonical z-axis)
     3. Build the 3×3 rotation ``R`` whose rows are ``[e1, e2, e3]``, so that
        ``R @ e1 = [1,0,0]``, ``R @ e2 = [0,1,0]``, ``R @ e3 = [0,0,1]``.
@@ -135,16 +135,17 @@ def align_to_symmetry_plane(
     centroid = points.mean(axis=0)
     dep1 = centroid - (float(np.dot(centroid, n)) - d) * n
 
-    # Step 2b — e2: in-plane direction toward projection of [0, 30, 0]
-    ref_pt = np.array([0.0, 30.0, 0.0])
-    proj_ref = ref_pt - (float(np.dot(ref_pt, n)) - d) * n
-    e2_dir = proj_ref - dep1
+    # Step 2b — e2: project the Y-axis direction onto the plane.
+    # Using a direction (not a world point) makes e2 independent of the
+    # centroid position — projecting a world point mixed in centroid
+    # coordinates and caused an undesired in-plane rotation.
+    y_axis = np.array([0.0, 1.0, 0.0])
+    e2_dir = y_axis - float(np.dot(y_axis, n)) * n
 
     if np.linalg.norm(e2_dir) < 1e-10:
-        # Fallback: [0, 0, 30] if [0, 30, 0] is nearly parallel to n
-        ref_pt = np.array([0.0, 0.0, 30.0])
-        proj_ref = ref_pt - (float(np.dot(ref_pt, n)) - plane.d) * n
-        e2_dir = proj_ref - dep1
+        # Fallback: n is parallel to Y — project Z axis instead
+        z_axis = np.array([0.0, 0.0, 1.0])
+        e2_dir = z_axis - float(np.dot(z_axis, n)) * n
 
     e2 = e2_dir / np.linalg.norm(e2_dir)
 
@@ -157,6 +158,93 @@ def align_to_symmetry_plane(
 
     # Step 4 — translate to dep1, then rotate
     return (points - dep1) @ R.T
+
+
+def align_to_symmetry_plane_benoit(
+    points: np.ndarray,
+    plane: SymmetryPlane,
+) -> np.ndarray:
+    """Exact Python equivalent of ``RegisterUtil -m symmetry`` (C++ CLARCS).
+
+    Reproduces faithfully every detail of RegisterUtil.cc lines 45-89,
+    including the ``sqrt(norm())`` normalization anomaly on dep3 (line 73).
+
+    Algorithm
+    ---------
+    1. Build three source points (dep frame) and three target points
+       (dest = canonical frame):
+         dest = [(0,0,0), (1,0,0), (0,1,0)]
+         dep1  = projection of surface centroid onto plane (original n/d)
+         dep2  = dep1 + n  (n flipped toward +x locally, d unchanged)
+         dep3  = dep1 + (proj([0,30,0]) − dep1) / sqrt(‖proj([0,30,0]) − dep1‖)
+                 ← intentional sqrt(norm) from the original C++
+    2. Fit the least-squares rigid transform dep → dest using Horn (1987)
+       quaternion ICP (``TransformRigid::set`` in C++).
+    3. Apply: result = R @ p + t.
+
+    See ``align_to_symmetry_plane`` for a corrected version.
+    """
+    n_orig = plane.n.copy()
+    d = plane.d
+
+    dest = np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]])
+
+    # dep1 — projection of surface centroid, using original plane
+    centroid = points.mean(axis=0)
+    dep1 = centroid - (float(np.dot(centroid, n_orig)) - d) * n_orig
+
+    # local n flip toward +x (only n, not d — C++ RegisterUtil.cc line 69)
+    n = n_orig.copy()
+    if float(np.dot(n, np.array([1., 0., 0.]))) < 0.0:
+        n = -n
+    dep2 = dep1 + n
+
+    # dep3 — project [0,30,0] (= dest3 * 30) with original plane, then scale
+    # C++ line 72-73: dep3 = projectPtOnPlane(dest3*30)
+    #                 dep3 = dep1 + (dep3-dep1) / sqrt((dep3-dep1).norm())
+    ref = np.array([0., 30., 0.])
+    dep3_raw = ref - (float(np.dot(ref, n_orig)) - d) * n_orig
+    v = dep3_raw - dep1
+    dep3 = dep1 + v / np.sqrt(np.linalg.norm(v))   # sqrt(norm) from C++
+
+    dep = np.array([dep1, dep2, dep3])
+
+    # Horn (1987) quaternion least-squares rigid ICP — TransformRigid::set
+    ux = dest.mean(axis=0)   # centroid of xk  (dest)
+    up = dep.mean(axis=0)    # centroid of cloud (dep)
+
+    # Cross-covariance H  (C++ calcCk: ret += (*j-up).outerProduct(*i-ux))
+    # j iterates cloud=dep, i iterates xk=dest  →  H = (dep-up)ᵀ @ (dest-ux) / n
+    H = (dep - up).T @ (dest - ux) / len(dep)
+    Sxx, Sxy, Sxz = H[0, 0], H[0, 1], H[0, 2]
+    Syx, Syy, Syz = H[1, 0], H[1, 1], H[1, 2]
+    Szx, Szy, Szz = H[2, 0], H[2, 1], H[2, 2]
+
+    # 4×4 symmetric matrix K (Horn 1987, eq. 65) — C++ calcQk
+    K = np.array([
+        [Sxx+Syy+Szz,  Syz-Szy,      Szx-Sxz,      Sxy-Syx     ],
+        [Syz-Szy,      Sxx-Syy-Szz,  Sxy+Syx,      Szx+Sxz     ],
+        [Szx-Sxz,      Sxy+Syx,     -Sxx+Syy-Szz,  Syz+Szy     ],
+        [Sxy-Syx,      Szx+Sxz,      Syz+Szy,      -Sxx-Syy+Szz],
+    ])
+
+    # Largest eigenvector of K = optimal unit quaternion [q0, qx, qy, qz]
+    # C++ biggestEigenVector(); eigh returns eigenvalues ascending → last = max
+    _, evecs = np.linalg.eigh(K)
+    q0, q1, q2, q3 = evecs[:, -1]
+
+    # Rotation matrix from quaternion — C++ calcRRotationMatrix
+    R = np.array([
+        [q0**2+q1**2-q2**2-q3**2,  2*(q1*q2-q0*q3),           2*(q1*q3+q0*q2)          ],
+        [2*(q1*q2+q0*q3),           q0**2-q1**2+q2**2-q3**2,   2*(q2*q3-q0*q1)          ],
+        [2*(q1*q3-q0*q2),           2*(q2*q3+q0*q1),           q0**2-q1**2-q2**2+q3**2  ],
+    ])
+
+    # Translation — C++: translation = ux - mrot*up
+    t = ux - R @ up
+
+    # Apply — C++: applyToVect(v) = mrot*v + translation
+    return (points @ R.T) + t
 
 
 # ---------------------------------------------------------------------------
