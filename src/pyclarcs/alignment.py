@@ -124,18 +124,20 @@ def align_to_symmetry_plane(
     ndarray (N, 3) — rigidly transformed copy of *points*
     """
     n = plane.n.copy()
+    d = plane.d
 
-    # Step 1 — ensure normal points toward +x
+    # Step 1 — ensure normal points toward +x (flip both n and d together)
     if float(np.dot(n, np.array([1.0, 0.0, 0.0]))) < 0.0:
         n = -n
+        d = -d
 
     # Step 2a — dep1: projection of surface centroid onto the plane
     centroid = points.mean(axis=0)
-    dep1 = centroid - (float(np.dot(centroid, n)) - plane.d) * n
+    dep1 = centroid - (float(np.dot(centroid, n)) - d) * n
 
     # Step 2b — e2: in-plane direction toward projection of [0, 30, 0]
     ref_pt = np.array([0.0, 30.0, 0.0])
-    proj_ref = ref_pt - (float(np.dot(ref_pt, n)) - plane.d) * n
+    proj_ref = ref_pt - (float(np.dot(ref_pt, n)) - d) * n
     e2_dir = proj_ref - dep1
 
     if np.linalg.norm(e2_dir) < 1e-10:
