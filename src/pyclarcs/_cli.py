@@ -191,14 +191,8 @@ def symplane(input_path, output_path, save_plane, init, no_coarse, no_fine, no_s
               ))
 @click.option("--save-plane", is_flag=True,
               help="Save the (computed or loaded) plane to <OUTPUT_STEM>.pl.")
-@click.option("--benoit", "use_benoit", is_flag=True,
-              help=(
-                  "Use the exact C++ RegisterUtil algorithm (Horn 1987 quaternion ICP "
-                  "with sqrt(norm) dep3 scaling from RegisterUtil.cc line 73) "
-                  "instead of the corrected direct-frame method."
-              ))
 @_verbose_option
-def recenter(input_path, output_path, plane, save_plane, use_benoit, quiet):
+def recenter(input_path, output_path, plane, save_plane, quiet):
     """Rigidly align a surface so its symmetry plane coincides with x = 0.
 
     If --plane is omitted the symmetry plane is estimated automatically
@@ -211,10 +205,7 @@ def recenter(input_path, output_path, plane, save_plane, use_benoit, quiet):
 
     from pyclarcs.io import load_surface, save_surface
     from pyclarcs.symmetry import SymmetryPlane
-    from pyclarcs.alignment import (
-        align_to_symmetry_plane,
-        align_to_symmetry_plane_benoit,
-    )
+    from pyclarcs.alignment import align_to_symmetry_plane
 
     if verbose:
         click.echo(f"Loading surface: {input_path}")
@@ -240,16 +231,9 @@ def recenter(input_path, output_path, plane, save_plane, use_benoit, quiet):
         if verbose:
             click.echo(f"  Estimated plane: {sym_plane}")
 
-    if use_benoit:
-        if verbose:
-            click.echo(
-                "Aligning (--benoit: exact C++ RegisterUtil.cc Horn ICP)…"
-            )
-        result = align_to_symmetry_plane_benoit(points, sym_plane)
-    else:
-        if verbose:
-            click.echo("Aligning to canonical symmetry plane (n=[1,0,0], d=0)…")
-        result = align_to_symmetry_plane(points, sym_plane)
+    if verbose:
+        click.echo("Aligning to canonical symmetry plane (n=[1,0,0], d=0)…")
+    result = align_to_symmetry_plane(points, sym_plane)
 
     if verbose:
         click.echo(f"Saving: {output_path}")
