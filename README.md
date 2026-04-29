@@ -24,8 +24,10 @@ Combined into a full population-analysis pipeline:
   - [Atlas construction](#atlas-construction)
   - [Asymmetry analysis on an atlas](#asymmetry-analysis-on-an-atlas)
 - [Python API](#python-api)
-- [Data — PaleoBRAIN dataset](#data--paleobrain-dataset)
-- [Registration benchmark](#registration-benchmark)
+- [Datasets](#datasets)
+  - [Synthetic test surfaces](#synthetic-test-surfaces)
+  - [PaleoBRAIN dataset](#paleobrain-dataset)
+  - [MNI pial surfaces](#mni-pial-surfaces)
 - [Repository structure](#repository-structure)
 - [Scientific references](#scientific-references)
 - [Licence](#licence)
@@ -110,6 +112,14 @@ Commands are grouped by purpose.
 |---|---|
 | [`clarcs atlas`](docs/atlas.md) | Build a mean shape atlas from a population |
 | [`clarcs project-asym`](docs/project-asym.md) | Build atlas + project per-subject asymmetries onto it |
+
+### Datasets
+
+| Command | Description |
+|---|---|
+| `clarcs generate-synth-data` | Generate synthetic ellipsoid surfaces and registration test pairs |
+| `clarcs download mni` | Download MNI152 pial surfaces (Brain for Blender / TemplateFlow) |
+| `clarcs download paleobrain` | Download the PaleoBRAIN dataset (75 brains + 75 endocasts) |
 
 ---
 
@@ -224,17 +234,53 @@ mean_asym = np.stack(projected).mean(axis=0)   # (N, 3) mean field on atlas
 
 ---
 
-## Data — PaleoBRAIN dataset
+## Datasets
+
+### Synthetic test surfaces
+
+Generate synthetic bilateral ellipsoid surfaces and matching registration pairs
+for local testing without downloading any data:
+
+```bash
+clarcs generate-synth-data data/synth/
+
+# Skip registration pairs (faster)
+clarcs generate-synth-data data/synth/ --no-reg
+```
+
+Three surfaces are always produced:
+
+| File | Semi-axes (mm) | True symmetry plane |
+|---|---|---|
+| `ellipsoid_skull_noisy.vtk` | a=85, b=65, c=70 | x = 85 |
+| `ellipsoid_a15_b60_c45.vtk` | a=15, b=60, c=45 | x = 5 |
+| `ellipsoid_oblate.vtk` | a=40, b=90, c=90 | x = 40 |
+
+For each available reference surface a `*_target.vtk` pair is created by
+applying an affine perturbation (t=(10,7,−5) mm, R=12°, s=1.03) followed by
+a smooth non-rigid deformation (8 Gaussian bumps × 5 mm).
+
+### PaleoBRAIN dataset
 
 75 brain surfaces (B01–B75) and 75 endocasts (E01–E75) from the PaleoBRAIN
 project (Balzeau A., 2025, doi:[10.48579/PRO/KZMMLM](https://data.indores.fr/dataset.xhtml?persistentId=doi:10.48579/PRO/KZMMLM)).
 
 ```bash
 # Download first 10 subjects (brains + endocasts), resample to 5 000 vertices
-python data/download_paleobrain.py --n 10 --target-n 5000
+clarcs download paleobrain data/paleobrain/ --n 10 --target-n 5000
 
 # Brains only, all 75
-python data/download_paleobrain.py --type brain
+clarcs download paleobrain data/paleobrain/ --type brain
+```
+
+### MNI pial surfaces
+
+```bash
+# Download LH+RH merged pial surface (~10 000 vertices by default)
+clarcs download mni data/mni/
+
+# Also download the MNI152NLin2009cAsym atlas (requires nibabel)
+clarcs download mni data/mni/ --atlas
 ```
 
 ---
@@ -257,13 +303,9 @@ pyclarcs/
 │   ├── atlas.md
 │   ├── asymmetry.md
 │   └── project-asym.md
-├── data/
-│   ├── generate_samples.py         ← generate synthetic + MNI test surfaces
-│   ├── download_paleobrain.py      ← download PaleoBRAIN dataset
-│   ├── benchmark_compare.py        ← compare clarcs / CPD / BCPD
-│   └── run_pipeline.py             ← run the full pipeline end-to-end
 └── src/pyclarcs/
     ├── _cli.py                     ← CLI entry-point (clarcs command)
+    ├── datasets.py                 ← generate-synth-data + download commands
     ├── symmetry.py                 ← SymmetryPlane class
     ├── principal_axes.py           ← inertia tensor initialisation
     ├── io.py                       ← multi-format surface I/O (VTK 9+)
