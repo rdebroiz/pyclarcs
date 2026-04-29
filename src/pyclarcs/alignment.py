@@ -105,8 +105,8 @@ def align_to_symmetry_plane(
     2. Build a source frame on the plane:
        - ``dep1`` = orthogonal projection of the surface centroid onto the plane
        - ``e1``   = plane normal ``n`` (→ canonical x-axis)
-       - ``e2``   = in-plane unit direction toward the projection of ``[0, 30, 0]``
-                    (→ canonical y-axis; fallback to ``[0, 0, 30]`` if collinear)
+       - ``e2``   = projection of ``[0, 1, 0]`` onto the plane (→ canonical y-axis;
+                    fallback to ``[0, 0, 1]`` if ``n`` is parallel to Y)
        - ``e3``   = ``cross(e1, e2)`` (→ canonical z-axis)
     3. Build the 3×3 rotation ``R`` whose rows are ``[e1, e2, e3]``, so that
        ``R @ e1 = [1,0,0]``, ``R @ e2 = [0,1,0]``, ``R @ e3 = [0,0,1]``.
@@ -135,16 +135,17 @@ def align_to_symmetry_plane(
     centroid = points.mean(axis=0)
     dep1 = centroid - (float(np.dot(centroid, n)) - d) * n
 
-    # Step 2b — e2: in-plane direction toward projection of [0, 30, 0]
-    ref_pt = np.array([0.0, 30.0, 0.0])
-    proj_ref = ref_pt - (float(np.dot(ref_pt, n)) - d) * n
-    e2_dir = proj_ref - dep1
+    # Step 2b — e2: project the Y-axis direction onto the plane.
+    # Using a direction (not a world point) makes e2 independent of the
+    # centroid position — projecting a world point mixed in centroid
+    # coordinates and caused an undesired in-plane rotation.
+    y_axis = np.array([0.0, 1.0, 0.0])
+    e2_dir = y_axis - float(np.dot(y_axis, n)) * n
 
     if np.linalg.norm(e2_dir) < 1e-10:
-        # Fallback: [0, 0, 30] if [0, 30, 0] is nearly parallel to n
-        ref_pt = np.array([0.0, 0.0, 30.0])
-        proj_ref = ref_pt - (float(np.dot(ref_pt, n)) - plane.d) * n
-        e2_dir = proj_ref - dep1
+        # Fallback: n is parallel to Y — project Z axis instead
+        z_axis = np.array([0.0, 0.0, 1.0])
+        e2_dir = z_axis - float(np.dot(z_axis, n)) * n
 
     e2 = e2_dir / np.linalg.norm(e2_dir)
 

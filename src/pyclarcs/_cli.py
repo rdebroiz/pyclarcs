@@ -1,17 +1,19 @@
 """
 Command-line interface for clarcs (Click-based).
 
-    clarcs reorient     INPUT [OUTPUT] --axes X Y Z
-    clarcs symplane     INPUT [OUTPUT] [--save-plane] [options]
-    clarcs recenter     INPUT [OUTPUT] --plane PLANE.pl
-    clarcs centerofmass INPUT [OUTPUT] --target TARGET
-    clarcs normalize    INPUT [OUTPUT] --target TARGET
-    clarcs nlregister   INPUT REF     [OUTPUT] [--deformation FIELD] [options]
+    clarcs reorient            INPUT [OUTPUT] --axes X Y Z
+    clarcs symplane            INPUT [OUTPUT] [--save-plane] [options]
+    clarcs recenter            INPUT [OUTPUT] --plane PLANE.pl
+    clarcs centerofmass        INPUT [OUTPUT] --target TARGET
+    clarcs normalize           INPUT [OUTPUT] --target TARGET
+    clarcs nlregister          INPUT REF [OUTPUT] [--deformation FIELD] [options]
+    clarcs generate-synth-data [OUTPUT_DIR] [options]
+    clarcs download mni        [OUTPUT] [options]
+    clarcs download paleobrain [OUTPUT] [options]
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import click
@@ -1270,6 +1272,16 @@ def atlas(subjects_dir, output_path, atlas_iter, save_registered,
 
     if verbose:
         click.echo("Done.")
+
+
+# ---------------------------------------------------------------------------
+# datasets commands (generate-synth-data, download)
+# ---------------------------------------------------------------------------
+
+from pyclarcs.datasets import generate_synth_data, download  # noqa: E402
+
+cli.add_command(generate_synth_data)
+cli.add_command(download)
 
 
 # ---------------------------------------------------------------------------

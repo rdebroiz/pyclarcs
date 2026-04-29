@@ -154,14 +154,6 @@ clarcs project-asym subjects/ mean-asym.vtp \
        --asymmetry-dir  asymmetry/
 ```
 
-`data/run_pipeline.py` automates the preprocessing + registration sequence
-on the bundled test surfaces:
-
-```bash
-python data/generate_samples.py   # create test surfaces (once)
-python data/run_pipeline.py results/
-```
-
 ---
 
 ## Python API
@@ -244,21 +236,6 @@ python data/download_paleobrain.py --n 10 --target-n 5000
 # Brains only, all 75
 python data/download_paleobrain.py --type brain
 ```
-
----
-
-## Registration benchmark
-
-MNI pial endocranium (10 k vertices), synthetic deformation of 8 Gaussian
-bumps × 5 mm amplitude. RMS before: **2.28 mm**.
-
-| Configuration | RMS after | Improvement |
-|---|---|---|
-| Baseline (Laplacian) | 0.333 mm | 85.4 % |
-| + Symmetric correspondences + TGD | 0.267 mm | 88.3 % |
-| **+ RKHS M-step (default)** | **0.190 mm** | **91.6 %** |
-
-See [`docs/nlregister.md`](docs/nlregister.md) for full details and parameters.
 
 ---
 
