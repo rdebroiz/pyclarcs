@@ -60,7 +60,12 @@ receive a Gaussian weight:
 
 $$w_{ij} = \exp\!\left(-\frac{\|T_i - y_j\|^2}{2\sigma^2}\right) \cdot \pi_{ij}$$
 
-where $\pi_{ij} = \exp\!\left(-\frac{|\mathrm{TGD}_i - \mathrm{TGD}_j|^2}{2\sigma_{\mathrm{tgd}}^2}\right)$
+where 
+
+$$
+\pi_{ij} = \exp\left(-\frac{|\mathrm{TGD}_i - \mathrm{TGD}_j|^2}{2\sigma_{\mathrm{tgd}}^2}\right)
+$$
+
 is the **TGD shape prior** (disabled with `--no-tgd`).  TGD (Total Geodesic
 Distance) is a scalar per vertex that encodes sulcal depth: high on gyral
 crests, low in deep sulci.  The prior down-weights matches between vertices at
@@ -81,7 +86,12 @@ same reference vertex.
 $$W_i = \frac{\sum_j \tilde{w}_{ij}}{\sum_j \tilde{w}_{ij} + c},
 \quad c = w_{\mathrm{out}} \cdot M/N$$
 
-The fuzzy target: $\bar{y}_i = \sum_j \tilde{w}_{ij}\,y_j / \sum_j \tilde{w}_{ij}$.
+The fuzzy target is
+
+$$
+\bar{y}_i = \frac{\sum_j \tilde{w}_{ij} y_j}{\sum_j \tilde{w}_{ij}}
+$$
+
 
 ### M-step — RKHS Wu kernel (or Laplacian fallback)
 
