@@ -129,21 +129,6 @@ the finest mesh and interpolated to coarser levels.
 
 ---
 
-## Benchmark (endocranium_mni_pial 10k, realistic synthetic deformation)
-
-Surface: MNI pial endocranium decimated to 10 000 vertices.
-Deformation: 8 Gaussian bumps × 5 mm amplitude (realistic inter-subject variability).
-RMS before registration: **2.28 mm** (after symplane → recenter → normalize preprocessing).
-Folding rate: % of faces with inverted normal (0 % = no topology inversion).
-
-| Configuration | RMS after | Improvement | Folding |
-|---|---|---|---|
-| Baseline (Laplacian, no sym/TGD) | 0.333 mm | 85.4 % | 1.0 % |
-| + Symmetric correspondences (Reg2) + TGD | 0.267 mm | 88.3 % | 1.0 % |
-| **+ RKHS M-step (default)** | **0.190 mm** | **91.6 %** | **1.0 %** |
-
----
-
 ## Examples
 
 ```bash
